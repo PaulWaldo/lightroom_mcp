@@ -1,0 +1,90 @@
+# Lightroom Plugin Development .gitignore
+
+# Compiled Lua files
+*.luac
+
+# Production plugin directory (compiled version)
+*.lrplugin/
+
+# Lightroom metadata and cache files
+*.lrdata/
+*.lrcat-*
+*.lrcat.lock
+Lightroom Catalog Previews.lrdata/
+Lightroom Catalog Smart Previews.lrdata/
+
+# Log files
+*.log
+lightroom-python-bridge.log
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Python server files (for Phase 2+)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+tmp/
+temp/
+
+# User-specific configuration (if we add local config overrides)
+local-config.lua
+config.local.lua
+
+# Test artifacts
+test-output/
+test-results/
+*.test.log
+
+# Documentation build output
+docs/_build/
+docs/html/
+*.pdf
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# LrC SDK (if copied locally - it's large and copyrighted)
+# LrC_*/
+LrSDK*/
+
+# Ignore any personal notes or todo files
+notes.txt
+todo.txt
+*.todo

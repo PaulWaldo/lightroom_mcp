@@ -36,17 +36,17 @@ logger:info("Stopping Python Bridge")
 -- Stop the socket server
 SimpleSocketBridge.stop()
 
--- Give it a moment to clean up
+-- Quick verification with reduced delay
 local LrTasks = import 'LrTasks'
 LrTasks.startAsyncTask(function()
-    LrTasks.sleep(2)  -- Wait 2 seconds for cleanup
-    
+    LrTasks.sleep(0.5)  -- Wait 500ms for cleanup (was 2 seconds)
+
     if not SimpleSocketBridge.isRunning() then
         logger:info("Python Bridge stopped successfully")
-        LrDialogs.showBezel("Python Bridge Stopped", 2)
+        LrDialogs.showBezel("Python Bridge Stopped", 1.5)
     else
-        logger:warn("Python Bridge may still be shutting down")
-        LrDialogs.showBezel("Python Bridge Stopping...", 3)
+        logger:warn("Python Bridge taking longer to stop")
+        LrDialogs.showBezel("Bridge Stopping...", 2)
     end
 end)
 

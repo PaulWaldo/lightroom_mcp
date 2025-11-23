@@ -468,11 +468,18 @@ end
 function CommandRouter:startCleanupTask()
     local logger = getLogger()
     logger:info("Starting request cleanup task")
-    
+
     LrTasks.startAsyncTask(function()
         while _G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning do
             self:_cleanupExpiredRequests()
-            LrTasks.sleep(10)  -- Check every 10 seconds
+            -- Sleep in small increments for faster shutdown response
+            -- 20 x 0.5s = 10 seconds total, but can exit within 500ms during shutdown
+            for i = 1, 20 do
+                if not (_G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning) then
+                    break
+                end
+                LrTasks.sleep(0.5)
+            end
         end
         logger:info("Request cleanup task stopped")
     end)

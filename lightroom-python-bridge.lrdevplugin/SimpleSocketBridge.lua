@@ -200,7 +200,12 @@ local function startSocketServer()
 
                 onClosed = function(socket)
                     logger:info("Sender socket closed - client disconnected")
-                    restartSocketServer()
+                    -- Don't restart if shutting down
+                    if _G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning then
+                        restartSocketServer()
+                    else
+                        logger:info("Socket closed during shutdown - not restarting")
+                    end
                 end,
 
                 onError = function(socket, err)
@@ -267,7 +272,12 @@ local function startSocketServer()
 
                 onClosed = function(socket)
                     logger:info("*** RECEIVER SOCKET CLOSED - CLIENT DISCONNECTED ***")
-                    restartSocketServer()
+                    -- Don't restart if shutting down
+                    if _G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning then
+                        restartSocketServer()
+                    else
+                        logger:info("Receiver socket closed during shutdown - not restarting")
+                    end
                 end,
 
                 onError = function(socket, err)
@@ -291,7 +301,7 @@ local function startSocketServer()
             _G.LightroomPythonBridge.socketServerRunning = true
 
             while _G.LightroomPythonBridge.socketServerRunning do
-                LrTasks.sleep(1/2)  -- This works fine in this context!
+                LrTasks.sleep(0.2)  -- 200ms - faster shutdown response (was 500ms)
             end
 
             logger:info("Socket server loop ended - cleaning up")
@@ -321,34 +331,49 @@ end
 -- Function to restart socket server after client disconnect
 restartSocketServer = function()
     local logger = getLogger()
-    
+
+    -- FIRST CHECK: Don't restart if shutting down (before spawning async task)
+    if not (_G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning) then
+        logger:info("Shutdown in progress - not restarting socket server")
+        return
+    end
+
     -- Prevent multiple concurrent restarts
     if isRestarting then
         logger:info("Socket server restart already in progress - skipping")
         return
     end
-    
-    if not (_G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning) then
-        logger:info("Socket server is not supposed to be running - not restarting")
-        return
-    end
-    
+
     isRestarting = true
     logger:info("Initiating socket server restart after client disconnect...")
-    
+
     LrTasks.startAsyncTask(function()
+        -- SECOND CHECK: Verify still running inside async task
+        if not (_G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning) then
+            logger:info("Shutdown detected in restart task - aborting restart")
+            isRestarting = false
+            return
+        end
+
         -- Reset state for clean restart
         bothSocketsReady = false
         messageQueue = {}
         globalSender = nil
         senderSocket = nil
-        
+
         -- Small delay to allow socket cleanup
         LrTasks.sleep(2)
-        
+
+        -- THIRD CHECK: Verify still running after sleep
+        if not (_G.LightroomPythonBridge and _G.LightroomPythonBridge.socketServerRunning) then
+            logger:info("Shutdown detected after sleep - aborting restart")
+            isRestarting = false
+            return
+        end
+
         logger:info("Restarting socket server...")
         startSocketServer()
-        
+
         isRestarting = false
         logger:info("Socket server restart completed")
     end)
@@ -362,6 +387,16 @@ local function stopSocketServer()
     if _G.LightroomPythonBridge then
         _G.LightroomPythonBridge.socketServerRunning = false
         logger:info("Socket server shutdown flag set")
+    end
+
+    -- Send shutdown notification to Python client before closing sockets
+    if commandRouter and commandRouter.socketBridge then
+        logger:info("Sending shutdown notification to Python client")
+        pcall(function()
+            commandRouter:sendEvent("server.shutdown", { reason = "Lightroom closing" })
+        end)
+        -- Give Python client 500ms to disconnect gracefully
+        LrTasks.sleep(0.5)
     end
 
     -- Reset socket state

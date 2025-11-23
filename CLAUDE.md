@@ -1,75 +1,137 @@
-# Lightroom Classic Python Bridge
+# CLAUDE.md
 
-**Status**: Production-ready with comprehensive error handling and validation  
-**Version**: 2.0.0 - Tested with Lightroom Classic 14.4
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What This Is
-Bidirectional communication bridge: Lightroom ↔ Python server via JSON over TCP sockets.
+## Project Overview
 
-## Architecture
+Model Context Protocol (MCP) server for Adobe Lightroom Classic. Enables AI agents to control Lightroom catalog operations, RAW photo development, preview generation, and histogram analysis.
+
+**Architecture**: Three-tier system
 ```
-[Lightroom Plugin] <--JSON/TCP--> [Python Server] <--API--> [External Apps]
+[AI Agent/LLM] <--MCP--> [Python FastMCP Server] <--JSON/TCP--> [Lightroom Lua Plugin] <--> [Lightroom Classic]
 ```
 
-**Key Components**:
-- **MessageProtocol.lua**: JSON encode/decode with error recovery
-- **CommandRouter.lua**: Dynamic command dispatch with 73 registered handlers
-- **SimpleSocketBridge.lua**: Dual socket management with auto-reconnection
-- **Error handling**: Built-in ErrorUtils with comprehensive validation
+## Running and Testing
 
-## Lightroom Constraints & Solutions
-
-**Critical Requirements**:
-- **Dual sockets required**: LrSocket cannot do bidirectional communication
-- **String-only protocol**: All messages must be strings (JSON as strings)
-- **Method vs function calls**: Use `obj.method(arg)` not `obj:method(arg)` for socket bridges
-- **Module caching**: Restart Lightroom to clear cached Lua modules
-- **Catalog access**: Always wrap in `withReadAccessDo()` / `withWriteAccessDo()`
-
-**Robustness Features**:
-- **Parameter validation**: Type and range checking for all develop parameters
-- **Error recovery**: Graceful handling of invalid requests with clear messages
-- **Connection stability**: Auto-restart on socket failures
-- **Performance**: Batch operations 10-20x faster than individual calls
-
-## Current Implementation Status
-
-**System Commands** (2): ✅ Complete
-- Ping/status with connection statistics
-
-**Catalog Operations** (11): ✅ Complete  
-- Photo search, metadata, collections, keywords, folders
-- Selection management and batch operations
-
-**Develop Module** (73 commands): ✅ Complete
-- All basic adjustments with validation
-- Parameter ranges and type checking  
-- Auto-corrections and process version control
-
-**Preview Generation** (4): ✅ Complete
-- JPEG thumbnails with chunked transfer for large files
-
-## Validation Status
+**Start MCP Server**:
 ```bash
-python validate_error_handling.py --fail-fast  # 100% pass rate (12/12 tests)
-python comprehensive_test.py                   # 5/6 tests (requires photo selection)
+python -m mcp_server.main          # Run as module (recommended)
+python mcp_server/main.py          # Direct execution
+./venv/bin/python -m mcp_server.main  # With virtual environment
 ```
 
-**Validation Results**:
-- ✅ **Error handling**: 100% robust with proper severity levels
-- ✅ **Parameter validation**: Type and range checking working
-- ✅ **Connection resilience**: Timeout and retry logic validated
-- ✅ **Performance**: Batch operations significantly faster
-- ⚠️ **User requirements**: Some APIs require photo selection for develop access
+**Install Dependencies**:
+```bash
+pip install -r requirements.txt
+```
 
-## Key Implementation Notes
+**Run Tests**:
+```bash
+python -m pytest lightroom_sdk/tests/
+python -c "from mcp_server.main import main_server; print('Server loaded successfully')"
+```
 
-**Working JSON Protocol**:
-- Request: `{"id":"uuid", "command":"develop.getValue", "params":{"param":"Exposure"}}`
-- Response: `{"id":"uuid", "success":true, "result":{"param":"Exposure", "value":0.5}}`
-- Error: `{"id":"uuid", "success":false, "error":{"code":"NO_PHOTO_SELECTED", "message":"...", "severity":"error"}}`
+**Lightroom Plugin Setup**:
+1. Plugin must be installed in Lightroom first (`File → Plug-in Manager → Add`)
+2. Start bridge: `File → Plug-in Extras → Start Python Bridge`
+3. Plugin logs: `~/Logs/Adobe/Lightroom/LrClassicLogs/LightroomPythonBridge.log` (Mac)
 
-**Photo Selection Requirement**:
-- Develop APIs require a photo to be selected in Lightroom
-- Clear error messages guide users when no photo is selected
-- No automatic photo selection to avoid unexpected behavior
+## Key Architecture Components
+
+### MCP Layer (`mcp_server/`)
+- **main.py**: FastMCP composition server that mounts all tool modules
+- **servers/**: Modular FastMCP servers (system, catalog, develop/, preview)
+  - **develop/**: 11 specialized modules for photo editing (basic_tools, tone_curves, color_tools, detail_tools, lens_tools, effects_tools, calibration_tools, parameter_management, helper_tools, plus main.py composition)
+- **shared/resilient_client.py**: Auto-reconnection manager with timeout handling
+- **middleware/error_handler.py**: Exception mapping from Lightroom SDK to MCP
+
+### SDK Layer (`lightroom_sdk/`)
+- **client.py**: Main LightroomClient class with command execution
+- **socket_bridge.py**: TCP socket management (dual sockets required due to LrSocket limitations)
+- **protocol.py**: JSON request/response structures
+- **exceptions.py**: Structured exception hierarchy with ERROR_CODE_MAP
+
+### Lightroom Plugin (`lightroom-python-bridge.lrdevplugin/`)
+- **CommandRouter.lua**: Dynamic command dispatcher (66+ registered handlers)
+- **SimpleSocketBridge.lua**: Dual TCP socket manager (send + receive)
+- **MessageProtocol.lua**: JSON encoding/decoding with error recovery
+- **CatalogModule.lua** & **DevelopModule.lua**: Lightroom API wrappers
+- **ErrorUtils.lua**: Parameter validation and error formatting
+
+## Critical Lightroom Constraints
+
+**Socket Communication**:
+- Lightroom's LrSocket is unidirectional → requires dual sockets (one send, one receive)
+- All messages must be strings → JSON serialized to strings
+- Use `obj.method(arg)` NOT `obj:method(arg)` for socket method calls
+
+**Lua Module Behavior**:
+- Lua modules cached by Lightroom → restart Lightroom to reload plugin code changes
+- Use global state `_G.LightroomPythonBridge` for shared objects between modules
+
+**Catalog Access Patterns**:
+- ALL catalog reads must wrap in `catalog:withReadAccessDo(function() ... end)`
+- ALL catalog writes must wrap in `catalog:withWriteAccessDo(function() ... end)`
+- Violating this causes silent failures or crashes
+
+**Develop Module Requirements**:
+- Most develop operations require photo selected AND Develop tab open in Lightroom
+- Returns `NO_PHOTO_SELECTED` error with severity="error" if no photo selected
+- Never auto-select photos to avoid unexpected UX
+
+## Error Handling Flow
+
+Python exceptions map to Lightroom error codes via `ERROR_CODE_MAP`:
+- `NO_PHOTO_SELECTED` → `PhotoNotSelectedError`
+- `INVALID_PARAM_VALUE` → `ParameterOutOfRangeError`
+- `PHOTO_NOT_FOUND` → `PhotoNotFoundError`
+- `CATALOG_ACCESS_FAILED` → `CatalogAccessError`
+- `HANDLER_ERROR` → `HandlerError`
+
+All Lightroom errors return:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "NO_PHOTO_SELECTED",
+    "message": "Please select a photo",
+    "severity": "error"
+  }
+}
+```
+
+## Performance Considerations
+
+- **Batch operations**: 10-20x faster than individual calls (use `develop_set_parameters`)
+- **Chunked transfer**: Automatic for large data >10MB (preview images)
+- **Preview resizing**: PIL resizes images since Lightroom returns full resolution
+- **Temperature/Tint**: Set individually (not in batch) for compatibility
+- **Client delay**: 100ms delay in `client.py:58` after each command (prevents race conditions)
+
+## Adding New MCP Tools
+
+1. Create tool function in appropriate server module (`mcp_server/servers/`)
+2. Use `@server.tool` decorator with clear docstring
+3. Call `await resilient_client_manager.execute_command(command, params)`
+4. Add corresponding Lua handler in `CommandRouter.lua` if needed
+5. Update tool count in `main.py:list_capabilities()`
+
+## Common Development Workflows
+
+**Testing connection**:
+```python
+from lightroom_sdk.client import LightroomClient
+client = LightroomClient()
+await client.connect()
+await client.ping()
+```
+
+**Debugging Lua plugin**:
+1. Check logs: `~/Logs/Adobe/Lightroom/LrClassicLogs/LightroomPythonBridge.log`
+2. Add `logger:info("message")` in Lua code
+3. Restart Lightroom to reload plugin
+
+**Adding develop parameter**:
+1. Add to `DevelopModule.lua` parameter validation
+2. Add MCP tool in `mcp_server/servers/develop/basic_tools.py` (or appropriate module)
+3. Update parameter ranges in docstring

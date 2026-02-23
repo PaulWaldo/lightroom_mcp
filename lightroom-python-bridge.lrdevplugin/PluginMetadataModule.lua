@@ -252,6 +252,91 @@ function PluginMetadataModule.batchGetMetadata(params, callback)
     end)
 end
 
+-- Discover all plugin metadata available for a photo
+function PluginMetadataModule.discoverMetadata(params, callback)
+    local wrappedCallback = ErrorUtils.wrapCallback(callback, "discoverMetadata")
+
+    -- Ensure modules are loaded
+    local moduleSuccess, moduleError = ErrorUtils.safeCall(ensureLrModules)
+    if not moduleSuccess then
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.RESOURCE_UNAVAILABLE,
+            "Failed to load Lightroom modules: " .. tostring(moduleError)))
+        return
+    end
+
+    local logger = getLogger()
+    local photoId = params and params.photoId
+
+    -- Validate required parameters
+    if not photoId then
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.MISSING_PARAM,
+            "Photo ID is required"))
+        return
+    end
+
+    logger:debug("Discovering plugin metadata for photo " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withReadAccessDo(function()
+        -- Find photo by localIdentifier
+        local findSuccess, photo = ErrorUtils.safeCall(function()
+            return catalog:getPhotoByLocalId(tonumber(photoId))
+        end)
+
+        if not findSuccess or not photo then
+            wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.PHOTO_NOT_FOUND,
+                "Photo with ID " .. photoId .. " not found"))
+            return
+        end
+
+        -- Use Lightroom's getRawMetadata("customMetadata") to discover all plugin metadata
+        -- This returns a table with all custom metadata fields, including plugin source
+        local customMetadataSuccess, customMetadata = ErrorUtils.safeCall(function()
+            return photo:getRawMetadata("customMetadata")
+        end)
+
+        local plugins = {}
+
+        if customMetadataSuccess and customMetadata and type(customMetadata) == "table" then
+            -- Organize metadata by plugin
+            for _, field in ipairs(customMetadata) do
+                if field.sourcePlugin and field.id then
+                    local pluginId = field.sourcePlugin
+                    local fieldId = field.id
+                    local value = field.value
+
+                    -- Initialize plugin entry if not exists
+                    if not plugins[pluginId] then
+                        plugins[pluginId] = {
+                            fields = {}
+                        }
+                    end
+
+                    -- Add field to plugin
+                    plugins[pluginId].fields[fieldId] = value
+                end
+            end
+
+            -- Count plugins manually (Lua 5.1 compatible - plugins is a hash table)
+            local pluginCount = 0
+            for _ in pairs(plugins) do
+                pluginCount = pluginCount + 1
+            end
+
+            logger:info("Discovered " .. tostring(#customMetadata) .. " custom metadata fields from " ..
+                       tostring(pluginCount) .. " plugin(s) for photo " .. photoId)
+        else
+            logger:info("No custom metadata found for photo " .. photoId)
+        end
+
+        wrappedCallback(ErrorUtils.createSuccess({
+            photoId = photoId,
+            plugins = plugins
+        }, "Plugin metadata discovery completed"))
+    end)
+end
+
 -- Search for photos by plugin property
 function PluginMetadataModule.findPhotosWithProperty(params, callback)
     local wrappedCallback = ErrorUtils.wrapCallback(callback, "findPhotosWithProperty")

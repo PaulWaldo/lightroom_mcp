@@ -358,6 +358,7 @@ local function registerApiCommands()
     Logger:info("Registering plugin metadata commands...")
     router:register("plugin.getMetadata", PluginMetadataModule.getMetadata, "sync")
     router:register("plugin.batchGetMetadata", PluginMetadataModule.batchGetMetadata, "sync")
+    router:register("plugin.discoverMetadata", PluginMetadataModule.discoverMetadata, "sync")
     router:register("plugin.findPhotosWithProperty", PluginMetadataModule.findPhotosWithProperty, "sync")
 
     Logger:info("Phase 4: API wrapper commands registered successfully")

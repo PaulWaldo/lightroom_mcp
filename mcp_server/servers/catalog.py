@@ -331,11 +331,78 @@ class CatalogServer(LightroomServerModule):
                 "fieldIds": field_ids
             })
 
-            return {
+            metadata = result.get("metadata", {})
+
+            # Detect empty metadata and provide helpful guidance
+            response = {
                 "success": True,
                 "photo_id": result.get("photoId"),
                 "plugin_id": result.get("pluginId"),
-                "metadata": result.get("metadata", {})
+                "metadata": metadata
+            }
+
+            if not metadata or all(v is None for v in metadata.values()):
+                response["warning"] = {
+                    "message": "No metadata found. This may indicate incorrect plugin_id or field_ids.",
+                    "suggestions": [
+                        "Verify the plugin ID is correct (case-sensitive)",
+                        "Check that field_ids match the internal plugin field names (not display labels)",
+                        "Use catalog_discover_plugin_metadata to find available plugins and fields",
+                        "Example: field name might be 'color' not 'Color', 'dominantColor' not 'Dominant Color'"
+                    ],
+                    "next_steps": [
+                        f"Try: catalog_discover_plugin_metadata(photo_id='{photo_id}')"
+                    ]
+                }
+
+            return response
+
+        @self.server.tool
+        async def catalog_discover_plugin_metadata(
+            photo_id: Union[str, int]
+        ) -> Dict[str, Any]:
+            """
+            Discover available plugin metadata for a photo.
+
+            Inspects a photo to find all plugins that have metadata
+            and lists their available field IDs with sample values.
+            Essential for LLMs to discover correct plugin IDs and field names.
+
+            Args:
+                photo_id: Photo ID to inspect
+
+            Returns:
+                Dictionary of plugins with their available fields and values
+
+            Example:
+                # Discover what plugins have metadata for this photo
+                result = await catalog_discover_plugin_metadata(photo_id='12345')
+                # Returns:
+                # {
+                #   "plugins": {
+                #     "com.frostcat.dominantcolor": {
+                #       "fields": {
+                #         "color": "Black",
+                #         "treatment": "Color",
+                #         "brightness": "Dark"
+                #       }
+                #     }
+                #   }
+                # }
+            """
+            result = await self.execute_command("plugin.discoverMetadata", {
+                "photoId": str(photo_id)
+            })
+
+            plugins = result.get("plugins", {})
+
+            return {
+                "success": True,
+                "photo_id": str(photo_id),
+                "plugins": plugins,
+                "plugin_count": len(plugins),
+                "message": f"Found metadata from {len(plugins)} plugin(s)",
+                "usage_tip": "Use the plugin IDs and field names from this result with catalog_get_plugin_metadata"
             }
 
         @self.server.tool

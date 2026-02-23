@@ -1,5 +1,22 @@
 # Progress
 
+## February 2026 - Plugin Metadata Discovery Enhancement ✅
+
+**Date**: February 23, 2026
+
+**Problem**: LLM receiving empty metadata (`metadata: {}`) when calling `catalog_get_plugin_metadata` due to incorrect plugin ID or field IDs.
+
+**Solution**:
+1. Enhanced error messages with helpful suggestions
+2. New `catalog_discover_plugin_metadata` tool using `getRawMetadata("customMetadata")` - discovers all plugins dynamically without hardcoding
+3. Registered new command in plugin
+
+**Result**: LLMs can now self-discover correct plugin IDs and field names for any plugin installation.
+
+**Files Modified**: `catalog.py`, `PluginMetadataModule.lua`, `PluginInit.lua`, memory bank docs
+
+---
+
 ## What Works
 
 ### ✅ Core Infrastructure (Complete)

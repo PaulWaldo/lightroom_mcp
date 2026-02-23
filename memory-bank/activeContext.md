@@ -11,15 +11,22 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 66
 
 ## Recent Changes & Implementations
 
-### Latest (January 2026) - Plugin Metadata Access
-- ✅ Implemented three plugin metadata tools for accessing third-party plugin data
+### Latest (February 2026) - Plugin Metadata Discovery
+- ✅ **Fixed empty metadata bug**: Added discovery tool and enhanced error messages
+- ✅ `catalog_discover_plugin_metadata` - NEW! Automatically discovers all plugins and their fields for a photo
+- ✅ Enhanced `catalog_get_plugin_metadata` with helpful warnings when metadata is empty
+- ✅ Discovery uses Lightroom SDK's `getRawMetadata("customMetadata")` - no hardcoded plugin IDs!
+- ✅ LLMs can now self-discover correct plugin IDs and field names dynamically
+- ✅ Solution works with ANY plugin installation, completely user-agnostic
+
+### Previous (January 2026) - Plugin Metadata Access
+- ✅ Implemented four plugin metadata tools for accessing third-party plugin data
 - ✅ `catalog_get_plugin_metadata` - Get metadata from a single photo
 - ✅ `catalog_batch_get_plugin_metadata` - Efficiently query multiple photos (10-20x faster)
 - ✅ `catalog_search_by_plugin_property` - Search catalog by plugin property values
 - ✅ Fixed bug in batchGetMetadata: Added fallback when batch API returns nil
 - ✅ Fixed bug in findPhotosWithProperty: Removed incorrect version parameter
-- ✅ Tested with Dominant Color plugin (ID: "com.example.lrdominantcolor", field: "color")
-- ✅ Successfully validated all three tools with real plugin metadata
+- ✅ Successfully validated all tools with real plugin metadata
 
 ### Core Infrastructure
 - ✅ Modular FastMCP server architecture with 5 main servers
@@ -31,7 +38,7 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 66
 
 ### MCP Tools Implemented
 - ✅ **System** (4 tools): ping, status, reconnect, check_photo_selected
-- ✅ **Catalog** (14 tools): Search, metadata, collections, folders, keywords, selection control, plugin metadata (3 tools)
+- ✅ **Catalog** (15 tools): Search, metadata, collections, folders, keywords, selection control, plugin metadata (4 tools including discovery)
 - ✅ **Develop** (49 tools):
   - Basic adjustments (exposure, contrast, highlights, shadows, whites, blacks)
   - Advanced controls (clarity, vibrance, saturation, texture, dehaze)
@@ -251,6 +258,8 @@ end
 3. **Performance First**: Batch operations should be default pattern
 4. **Documentation Clarity**: Multiple formats serve different audiences
 5. **Resilience Required**: Network issues are common, handle gracefully
+6. **Use SDK Introspection**: `getRawMetadata("customMetadata")` reveals all plugin metadata without hardcoding
+7. **Never Assume Plugin Installations**: Each user has different plugins, discover dynamically
 
 ### Best Practices Established
 1. Always validate parameters before sending to Lightroom

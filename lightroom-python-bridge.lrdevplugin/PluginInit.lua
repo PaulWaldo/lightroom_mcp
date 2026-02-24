@@ -39,7 +39,7 @@ local ErrorUtils = {
     CODES = {
         MISSING_PARAM = "MISSING_PARAM",
         MISSING_PHOTO_ID = "MISSING_PHOTO_ID",
-        INVALID_PARAM = "INVALID_PARAM", 
+        INVALID_PARAM = "INVALID_PARAM",
         INVALID_PARAM_TYPE = "INVALID_PARAM_TYPE",
         INVALID_PARAM_VALUE = "INVALID_PARAM_VALUE",
         PHOTO_NOT_FOUND = "PHOTO_NOT_FOUND",
@@ -49,11 +49,11 @@ local ErrorUtils = {
         RESOURCE_UNAVAILABLE = "RESOURCE_UNAVAILABLE",
         OPERATION_FAILED = "OPERATION_FAILED"
     },
-    
+
     safeCall = function(func, ...)
         return LrTasks.pcall(func, ...)
     end,
-    
+
     createError = function(code, message, details)
         -- Map error codes to severity levels
         local severity = "error"
@@ -64,7 +64,7 @@ local ErrorUtils = {
                 severity = "info"
             end
         end
-        
+
         return {
             success = false,
             error = {
@@ -76,7 +76,7 @@ local ErrorUtils = {
             }
         }
     end,
-    
+
     createSuccess = function(result, message)
         return {
             success = true,
@@ -85,7 +85,7 @@ local ErrorUtils = {
             timestamp = os.time()
         }
     end,
-    
+
     validateRequired = function(params, requiredFields)
         if not params then
             return false, "No parameters provided"
@@ -97,7 +97,7 @@ local ErrorUtils = {
         end
         return true
     end,
-    
+
     wrapCallback = function(callback, operation)
         -- Return callback as-is to avoid recursion issues
         -- Error handling is done at higher levels
@@ -172,6 +172,16 @@ local function loadPhase4Modules()
         return false
     end
 
+    -- Load PluginMetadataModule
+    success, PluginMetadataModule = LrTasks.pcall(require, 'PluginMetadataModule')
+    if success then
+        _G.LightroomPythonBridge.PluginMetadataModule = PluginMetadataModule
+        Logger:info("PluginMetadataModule loaded successfully")
+    else
+        Logger:error("Failed to load PluginMetadataModule: " .. tostring(PluginMetadataModule))
+        return false
+    end
+
     return true
 end
 
@@ -232,12 +242,14 @@ local function registerApiCommands()
     local DevelopModule = _G.LightroomPythonBridge.DevelopModule
     local CatalogModule = _G.LightroomPythonBridge.CatalogModule
     local PreviewModule = _G.LightroomPythonBridge.PreviewModule
+    local PluginMetadataModule = _G.LightroomPythonBridge.PluginMetadataModule
 
     Logger:info("Module availability - Develop: " .. tostring(DevelopModule ~= nil) ..
                 ", Catalog: " .. tostring(CatalogModule ~= nil) ..
-                ", Preview: " .. tostring(PreviewModule ~= nil))
+                ", Preview: " .. tostring(PreviewModule ~= nil) ..
+                ", PluginMetadata: " .. tostring(PluginMetadataModule ~= nil))
 
-    if not DevelopModule or not CatalogModule or not PreviewModule then
+    if not DevelopModule or not CatalogModule or not PreviewModule or not PluginMetadataModule then
         Logger:error("One or more Phase 4 modules are nil - cannot register commands")
         return
     end
@@ -256,7 +268,7 @@ local function registerApiCommands()
     router:register("develop.getProcessVersion", DevelopModule.getProcessVersion, "sync")
     router:register("develop.setProcessVersion", DevelopModule.setProcessVersion, "sync")
     router:register("develop.resetAllDevelopAdjustments", DevelopModule.resetAllDevelopAdjustments, "sync")
-    
+
     -- ToneCurve manipulation commands
     router:register("develop.getCurvePoints", DevelopModule.getCurvePoints, "sync")
     router:register("develop.setCurvePoints", DevelopModule.setCurvePoints, "sync")
@@ -264,41 +276,41 @@ local function registerApiCommands()
     router:register("develop.setCurveSCurve", DevelopModule.setCurveSCurve, "sync")
     router:register("develop.addCurvePoint", DevelopModule.addCurvePoint, "sync")
     router:register("develop.removeCurvePoint", DevelopModule.removeCurvePoint, "sync")
-    
+
     -- PointColors helper APIs
     router:register("develop.createGreenSwatch", DevelopModule.createGreenSwatch, "sync")
     router:register("develop.createCyanSwatch", DevelopModule.createCyanSwatch, "sync")
     router:register("develop.enhanceColors", DevelopModule.enhanceColors, "sync")
-    
+
     -- Masking navigation and state commands
     router:register("develop.goToMasking", DevelopModule.goToMasking, "sync")
     router:register("develop.toggleOverlay", DevelopModule.toggleOverlay, "sync")
     router:register("develop.selectTool", DevelopModule.selectTool, "sync")
-    
+
     -- Mask management commands
     router:register("develop.getAllMasks", DevelopModule.getAllMasks, "sync")
     router:register("develop.getSelectedMask", DevelopModule.getSelectedMask, "sync")
     router:register("develop.createNewMask", DevelopModule.createNewMask, "sync")
     router:register("develop.selectMask", DevelopModule.selectMask, "sync")
     router:register("develop.deleteMask", DevelopModule.deleteMask, "sync")
-    
+
     -- Mask tool management commands
     router:register("develop.getSelectedMaskTool", DevelopModule.getSelectedMaskTool, "sync")
     router:register("develop.selectMaskTool", DevelopModule.selectMaskTool, "sync")
     router:register("develop.deleteMaskTool", DevelopModule.deleteMaskTool, "sync")
-    
+
     -- Mask operations and boolean logic commands
     router:register("develop.addToCurrentMask", DevelopModule.addToCurrentMask, "sync")
     router:register("develop.intersectWithCurrentMask", DevelopModule.intersectWithCurrentMask, "sync")
     router:register("develop.subtractFromCurrentMask", DevelopModule.subtractFromCurrentMask, "sync")
     router:register("develop.invertMask", DevelopModule.invertMask, "sync")
-    
+
     -- Legacy tool reset commands (for backward compatibility)
     router:register("develop.resetGradient", DevelopModule.resetGradient, "sync")
     router:register("develop.resetCircularGradient", DevelopModule.resetCircularGradient, "sync")
     router:register("develop.resetBrushing", DevelopModule.resetBrushing, "sync")
     router:register("develop.resetMasking", DevelopModule.resetMasking, "sync")
-    
+
     -- Helper functions for common masking workflows
     router:register("develop.createGraduatedFilter", DevelopModule.createGraduatedFilter, "sync")
     router:register("develop.createRadialFilter", DevelopModule.createRadialFilter, "sync")
@@ -306,7 +318,7 @@ local function registerApiCommands()
     router:register("develop.createAISelectionMask", DevelopModule.createAISelectionMask, "sync")
     router:register("develop.createRangeMask", DevelopModule.createRangeMask, "sync")
     router:register("develop.createComplexMask", DevelopModule.createComplexMask, "sync")
-    
+
     -- Local adjustment parameter functions
     router:register("develop.activateMaskingMode", DevelopModule.activateMaskingMode, "sync")
     router:register("develop.getLocalValue", DevelopModule.getLocalValue, "sync")
@@ -314,7 +326,7 @@ local function registerApiCommands()
     router:register("develop.applyLocalSettings", DevelopModule.applyLocalSettings, "sync")
     router:register("develop.getAvailableLocalParameters", DevelopModule.getAvailableLocalParameters, "sync")
     router:register("develop.createMaskWithLocalAdjustments", DevelopModule.createMaskWithLocalAdjustments, "sync")
-    
+
     -- Reverse engineering / introspection functions
     router:register("develop.dumpLrDevelopController", DevelopModule.dumpLrDevelopController, "sync")
     router:register("develop.discoverGradientParameters", DevelopModule.discoverGradientParameters, "sync")
@@ -341,6 +353,12 @@ local function registerApiCommands()
     router:register("preview.generateBatchPreviews", PreviewModule.generateBatchPreviews, "sync")
     router:register("preview.getPreviewInfo", PreviewModule.getPreviewInfo, "sync")
     router:register("preview.getPreviewChunk", PreviewModule.getPreviewChunk, "sync")
+
+    -- Plugin metadata module commands (registered as sync for catalog API access)
+    Logger:info("Registering plugin metadata commands...")
+    router:register("plugin.getMetadata", PluginMetadataModule.getMetadata, "sync")
+    router:register("plugin.batchGetMetadata", PluginMetadataModule.batchGetMetadata, "sync")
+    router:register("plugin.findPhotosWithProperty", PluginMetadataModule.findPhotosWithProperty, "sync")
 
     Logger:info("Phase 4: API wrapper commands registered successfully")
 end

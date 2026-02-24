@@ -51,45 +51,45 @@ local CatalogModule = {}
 -- Search photos with flexible criteria
 function CatalogModule.searchPhotos(params, callback)
     local wrappedCallback = ErrorUtils.wrapCallback(callback, "searchPhotos")
-    
+
     -- Ensure modules are loaded
     local moduleSuccess, moduleError = ErrorUtils.safeCall(ensureLrModules)
     if not moduleSuccess then
-        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.RESOURCE_UNAVAILABLE, 
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.RESOURCE_UNAVAILABLE,
             "Failed to load Lightroom modules: " .. tostring(moduleError)))
         return
     end
-    
+
     local logger = getLogger()
     local criteria = (params and params.criteria) or {}
     local limit = (params and params.limit) or 100
     local offset = (params and params.offset) or 0
-    
+
     -- Validate limit parameter
     if limit < 1 or limit > 10000 then
-        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PARAM_VALUE, 
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PARAM_VALUE,
             "Limit must be between 1 and 10000"))
         return
     end
-    
+
     -- Validate offset parameter
     if offset < 0 then
-        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PARAM_VALUE, 
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PARAM_VALUE,
             "Offset must be 0 or greater"))
         return
     end
-    
+
     logger:debug("Searching photos with criteria")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         -- Get photos using the most appropriate method
         local allPhotos
         local photosSuccess, photosResult = ErrorUtils.safeCall(function()
             return catalog:getTargetPhotos()
         end)
-        
+
         if photosSuccess and photosResult and #photosResult > 0 then
             allPhotos = photosResult
         else
@@ -97,16 +97,16 @@ function CatalogModule.searchPhotos(params, callback)
             local allSuccess, allResult = ErrorUtils.safeCall(function()
                 return catalog:getAllPhotos()
             end)
-            
+
             if allSuccess then
                 allPhotos = allResult
             else
-                wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.CATALOG_ACCESS_FAILED, 
+                wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.CATALOG_ACCESS_FAILED,
                     "Failed to access catalog photos"))
                 return
             end
         end
-        
+
         if not allPhotos or #allPhotos == 0 then
             wrappedCallback(ErrorUtils.createSuccess({
                 photos = {},
@@ -117,21 +117,21 @@ function CatalogModule.searchPhotos(params, callback)
             }, "No photos found in catalog"))
             return
         end
-        
+
         local results = {}
         local total = #allPhotos
         local startIndex = offset + 1
         local endIndex = math.min(offset + limit, total)
-        
+
         for i = startIndex, endIndex do
             local photo = allPhotos[i]
-            
+
             local photoData = {
                 id = photo.localIdentifier,
                 keywords = {},
                 collections = {}
             }
-            
+
             -- Safely get photo metadata
             ErrorUtils.safeCall(function()
                 photoData.filename = photo:getFormattedMetadata("fileName")
@@ -142,7 +142,7 @@ function CatalogModule.searchPhotos(params, callback)
                 photoData.fileFormat = photo:getRawMetadata("fileFormat")
                 photoData.isVirtualCopy = photo:getRawMetadata("isVirtualCopy")
             end)
-            
+
             -- Get keywords
             ErrorUtils.safeCall(function()
                 local keywords = photo:getRawMetadata("keywords")
@@ -157,7 +157,7 @@ function CatalogModule.searchPhotos(params, callback)
                     end
                 end
             end)
-            
+
             -- Get collections
             ErrorUtils.safeCall(function()
                 local collections = photo:getContainedCollections()
@@ -172,12 +172,12 @@ function CatalogModule.searchPhotos(params, callback)
                     end
                 end
             end)
-            
+
             table.insert(results, photoData)
         end
-        
+
         logger:info("Found " .. total .. " photos, returning " .. #results)
-        
+
         wrappedCallback(ErrorUtils.createSuccess({
             photos = results,
             total = total,
@@ -192,13 +192,13 @@ end
 function CatalogModule.getPhotoMetadata(params, callback)
     ensureLrModules()
     local logger = getLogger()
-    
+
     local photoId = nil
-    
+
     -- Safe parameter extraction with error handling
     local success, result = ErrorUtils.safeCall(function()
         logger:debug("getPhotoMetadata called with params: " .. tostring(params))
-        
+
         if params then
             logger:debug("params is a table with type: " .. type(params))
             local count = 0
@@ -207,22 +207,22 @@ function CatalogModule.getPhotoMetadata(params, callback)
                 count = count + 1
             end
             logger:debug("Total params count: " .. count)
-            
+
             photoId = params.photoId
         else
             logger:error("params is nil!")
         end
-        
+
         logger:debug("Extracted photoId: " .. tostring(photoId))
         return photoId
     end)
-    
+
     if not success then
         logger:error("Error in parameter extraction: " .. tostring(result))
     else
         photoId = result
     end
-    
+
     if not photoId then
         callback({
             error = {
@@ -232,15 +232,15 @@ function CatalogModule.getPhotoMetadata(params, callback)
         })
         return
     end
-    
+
     logger:debug("Getting metadata for photo: " .. photoId)
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         -- Find photo by localIdentifier
         local photo = catalog:getPhotoByLocalId(tonumber(photoId))
-        
+
         if not photo then
             callback({
                 error = {
@@ -250,11 +250,11 @@ function CatalogModule.getPhotoMetadata(params, callback)
             })
             return
         end
-        
+
         -- Collect comprehensive metadata
         local rawRating = photo:getRawMetadata("rating")
         logger:debug("Raw rating value: " .. tostring(rawRating) .. " (type: " .. type(rawRating) .. ")")
-        
+
         local metadata = {
             -- Basic info
             id = photo.localIdentifier,
@@ -263,35 +263,35 @@ function CatalogModule.getPhotoMetadata(params, callback)
             filepath = photo:getRawMetadata("path"),
             fileSize = photo:getFormattedMetadata("fileSize"),
             fileFormat = photo:getRawMetadata("fileFormat"),
-            
+
             -- Capture info
             captureTime = photo:getFormattedMetadata("dateTimeOriginal"),
             cameraMake = photo:getFormattedMetadata("cameraMake"),
             cameraModel = photo:getFormattedMetadata("cameraModel"),
             lens = photo:getFormattedMetadata("lens"),
-            
+
             -- Settings
             iso = photo:getFormattedMetadata("isoSpeedRating"),
             aperture = photo:getFormattedMetadata("aperture"),
             shutterSpeed = photo:getFormattedMetadata("shutterSpeed"),
             focalLength = photo:getFormattedMetadata("focalLength"),
-            
+
             -- Lightroom specific
             rating = rawRating or 0,  -- Default to 0 if nil
             colorLabel = photo:getRawMetadata("colorNameForLabel"),
             isVirtualCopy = photo:getRawMetadata("isVirtualCopy"),
             stackPosition = photo:getRawMetadata("stackPositionInFolder"),
-            
+
             -- Develop status (use basic metadata only)
             -- hasAdjustments/hasCrop not available in all Lightroom versions
-            
+
             -- Keywords and collections
             keywords = {},
             collections = {}
         }
-        
+
         logger:debug("Metadata table rating: " .. tostring(metadata.rating))
-        
+
         -- Get keywords
         local keywords = photo:getRawMetadata("keywords")
         if keywords then
@@ -302,7 +302,7 @@ function CatalogModule.getPhotoMetadata(params, callback)
                 })
             end
         end
-        
+
         -- Get collections
         local collections = photo:getContainedCollections()
         if collections then
@@ -313,10 +313,10 @@ function CatalogModule.getPhotoMetadata(params, callback)
                 })
             end
         end
-        
+
         logger:info("Retrieved metadata for photo: " .. metadata.filename)
         logger:debug("About to send metadata with rating: " .. tostring(metadata.rating))
-        
+
         callback({
             result = metadata
         })
@@ -326,25 +326,25 @@ end
 -- Get current selection
 function CatalogModule.getSelectedPhotos(params, callback)
     local wrappedCallback = ErrorUtils.wrapCallback(callback, "getSelectedPhotos")
-    
+
     -- Ensure modules are loaded
     local moduleSuccess, moduleError = ErrorUtils.safeCall(ensureLrModules)
     if not moduleSuccess then
-        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.RESOURCE_UNAVAILABLE, 
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.RESOURCE_UNAVAILABLE,
             "Failed to load Lightroom modules: " .. tostring(moduleError)))
         return
     end
-    
+
     local logger = getLogger()
     logger:debug("Getting currently selected photos")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local selectedSuccess, selectedPhotos = ErrorUtils.safeCall(function()
             return catalog:getTargetPhotos()
         end)
-        
+
         if not selectedSuccess or not selectedPhotos or #selectedPhotos == 0 then
             wrappedCallback(ErrorUtils.createSuccess({
                 photos = {},
@@ -352,14 +352,14 @@ function CatalogModule.getSelectedPhotos(params, callback)
             }, "No photos currently selected"))
             return
         end
-        
+
         local results = {}
-        
+
         for i, photo in ipairs(selectedPhotos) do
             local photoData = {
                 id = photo.localIdentifier
             }
-            
+
             -- Safely get photo metadata
             ErrorUtils.safeCall(function()
                 photoData.filename = photo:getFormattedMetadata("fileName")
@@ -370,12 +370,12 @@ function CatalogModule.getSelectedPhotos(params, callback)
                 photoData.fileFormat = photo:getRawMetadata("fileFormat")
                 photoData.isVirtualCopy = photo:getRawMetadata("isVirtualCopy")
             end)
-            
+
             table.insert(results, photoData)
         end
-        
+
         logger:info("Retrieved " .. #results .. " selected photos")
-        
+
         wrappedCallback(ErrorUtils.createSuccess({
             photos = results,
             count = #results
@@ -388,7 +388,7 @@ function CatalogModule.setSelectedPhotos(params, callback)
     ensureLrModules()
     local logger = getLogger()
     local photoIds = params.photoIds
-    
+
     if not photoIds or type(photoIds) ~= "table" then
         callback({
             error = {
@@ -398,17 +398,17 @@ function CatalogModule.setSelectedPhotos(params, callback)
         })
         return
     end
-    
+
     logger:debug("Setting photo selection to " .. #photoIds .. " photos")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     -- Use withWriteAccessDo with timeout to prevent blocking
     local writeSuccess, writeError = ErrorUtils.safeCall(function()
         catalog:withWriteAccessDo("Set Photo Selection", function()
             local photos = {}
             local notFound = {}
-            
+
             -- Find all photos by localIdentifier
             for _, photoId in ipairs(photoIds) do
                 local photo = catalog:getPhotoByLocalId(tonumber(photoId))
@@ -418,14 +418,14 @@ function CatalogModule.setSelectedPhotos(params, callback)
                     table.insert(notFound, photoId)
                 end
             end
-            
+
             if #photos == 0 then
                 error("No photos found with provided IDs")
             end
-            
+
             -- Set selection
             catalog:setSelectedPhotos(photos[1], photos)
-            
+
             -- Return results for success callback
             return {
                 selected = #photos,
@@ -433,7 +433,7 @@ function CatalogModule.setSelectedPhotos(params, callback)
             }
         end, { timeout = 10 })  -- 10 second timeout
     end)
-    
+
     if writeSuccess then
         logger:info("Successfully set selection to " .. writeError.selected .. " photos")  -- writeError contains results when successful
         callback({
@@ -456,14 +456,14 @@ function CatalogModule.getAllPhotos(params, callback)
     local logger = getLogger()
     local limit = params.limit or 1000  -- Default limit to prevent memory issues
     local offset = params.offset or 0
-    
+
     logger:debug("Getting all photos from catalog")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local allPhotos = catalog:getAllPhotos()
-        
+
         if not allPhotos then
             callback({
                 error = {
@@ -473,14 +473,14 @@ function CatalogModule.getAllPhotos(params, callback)
             })
             return
         end
-        
+
         logger:info("Found " .. #allPhotos .. " total photos in catalog")
-        
+
         -- Apply pagination
         local startIndex = offset + 1
         local endIndex = math.min(startIndex + limit - 1, #allPhotos)
         local pagedPhotos = {}
-        
+
         for i = startIndex, endIndex do
             local photo = allPhotos[i]
             table.insert(pagedPhotos, {
@@ -492,7 +492,7 @@ function CatalogModule.getAllPhotos(params, callback)
                 rating = photo:getRawMetadata("rating")
             })
         end
-        
+
         callback({
             result = {
                 photos = pagedPhotos,
@@ -510,7 +510,7 @@ function CatalogModule.findPhotoByPath(params, callback)
     ensureLrModules()
     local logger = getLogger()
     local path = params.path
-    
+
     if not path then
         callback({
             error = {
@@ -520,14 +520,14 @@ function CatalogModule.findPhotoByPath(params, callback)
         })
         return
     end
-    
+
     logger:debug("Finding photo by path: " .. path)
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local photo = catalog:findPhotoByPath(path)
-        
+
         if not photo then
             callback({
                 error = {
@@ -537,7 +537,7 @@ function CatalogModule.findPhotoByPath(params, callback)
             })
             return
         end
-        
+
         callback({
             result = {
                 id = photo.localIdentifier,
@@ -558,15 +558,15 @@ function CatalogModule.findPhotos(params, callback)
     local logger = getLogger()
     local searchDesc = params.searchDesc or {}
     local limit = params.limit or 100
-    
+
     logger:debug("Finding photos with search criteria")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         -- Simple fallback: just use getAllPhotos with limit
         local allPhotos = catalog:getAllPhotos()
-        
+
         if not allPhotos or #allPhotos == 0 then
             callback({
                 result = {
@@ -577,13 +577,13 @@ function CatalogModule.findPhotos(params, callback)
             })
             return
         end
-        
+
         logger:info("Found " .. #allPhotos .. " photos total, applying limit")
-        
+
         -- Apply limit and convert to response format
         local resultPhotos = {}
         local maxResults = math.min(limit, #allPhotos)
-        
+
         for i = 1, maxResults do
             local photo = allPhotos[i]
             table.insert(resultPhotos, {
@@ -595,7 +595,7 @@ function CatalogModule.findPhotos(params, callback)
                 rating = photo:getRawMetadata("rating")
             })
         end
-        
+
         callback({
             result = {
                 photos = resultPhotos,
@@ -610,14 +610,14 @@ end
 function CatalogModule.getCollections(params, callback)
     ensureLrModules()
     local logger = getLogger()
-    
+
     logger:debug("Getting collections from catalog")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local collections = catalog:getChildCollections()
-        
+
         local resultCollections = {}
         for _, collection in ipairs(collections) do
             table.insert(resultCollections, {
@@ -627,7 +627,7 @@ function CatalogModule.getCollections(params, callback)
                 photoCount = #collection:getPhotos()
             })
         end
-        
+
         callback({
             result = {
                 collections = resultCollections,
@@ -641,14 +641,14 @@ end
 function CatalogModule.getKeywords(params, callback)
     ensureLrModules()
     local logger = getLogger()
-    
+
     logger:debug("Getting keywords from catalog")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local keywords = catalog:getKeywords()
-        
+
         local resultKeywords = {}
         for _, keyword in ipairs(keywords) do
             table.insert(resultKeywords, {
@@ -657,7 +657,7 @@ function CatalogModule.getKeywords(params, callback)
                 photoCount = #keyword:getPhotos()
             })
         end
-        
+
         callback({
             result = {
                 keywords = resultKeywords,
@@ -672,14 +672,14 @@ function CatalogModule.getFolders(params, callback)
     ensureLrModules()
     local logger = getLogger()
     local includeSubfolders = params.includeSubfolders or false
-    
+
     logger:debug("Getting folders from catalog")
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local rootFolders = catalog:getFolders()
-        
+
         local function buildFolderTree(folder, depth)
             depth = depth or 0
             local folderPath = folder:getPath()
@@ -693,14 +693,14 @@ function CatalogModule.getFolders(params, callback)
                 totalPhotoCount = #folder:getPhotos(true), -- Photos including subfolders
                 subfolders = {}
             }
-            
+
             -- Get parent folder info if available
             local parent = folder:getParent()
             if parent then
                 folderData.parentId = parent:getPath()
                 folderData.parentName = parent:getName()
             end
-            
+
             -- Recursively get subfolders if requested
             if includeSubfolders then
                 local children = folder:getChildren()
@@ -710,17 +710,17 @@ function CatalogModule.getFolders(params, callback)
                     end
                 end
             end
-            
+
             return folderData
         end
-        
+
         local resultFolders = {}
         for _, folder in ipairs(rootFolders) do
             table.insert(resultFolders, buildFolderTree(folder))
         end
-        
+
         logger:info("Retrieved " .. #resultFolders .. " root folders from catalog")
-        
+
         callback({
             result = {
                 folders = resultFolders,
@@ -731,13 +731,109 @@ function CatalogModule.getFolders(params, callback)
     end)
 end
 
+-- Add keywords to a photo
+function CatalogModule.addPhotoKeywords(params, callback)
+    local wrappedCallback = ErrorUtils.wrapCallback(callback, "addPhotoKeywords")
+
+    -- Ensure modules are loaded
+    local moduleSuccess, moduleError = ErrorUtils.safeCall(ensureLrModules)
+    if not moduleSuccess then
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.RESOURCE_UNAVAILABLE,
+            "Failed to load Lightroom modules: " .. tostring(moduleError)))
+        return
+    end
+
+    local logger = getLogger()
+    local photoId = params.photoId
+    local keywords = params.keywords
+
+    -- Validate parameters
+    if not photoId then
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.MISSING_PARAM,
+            "Photo ID is required"))
+        return
+    end
+
+    if not keywords or type(keywords) ~= "table" or #keywords == 0 then
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PARAM_VALUE,
+            "Keywords must be a non-empty array"))
+        return
+    end
+
+    logger:debug("Adding " .. #keywords .. " keywords to photo: " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    -- Use withWriteAccessDo for making changes
+    local writeSuccess, writeError = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo("Add Keywords", function()
+            -- Find photo by localIdentifier
+            local photo = catalog:getPhotoByLocalId(tonumber(photoId))
+
+            if not photo then
+                error("Photo with ID " .. photoId .. " not found")
+            end
+
+            -- Get or create keywords and add them to the photo
+            local addedKeywords = {}
+            local existingKeywords = {}
+
+            for _, keywordName in ipairs(keywords) do
+                -- Check if keyword already exists on photo
+                local photoKeywords = photo:getRawMetadata("keywords") or {}
+                local alreadyHas = false
+
+                for _, existingKeyword in ipairs(photoKeywords) do
+                    if existingKeyword:getName() == keywordName then
+                        alreadyHas = true
+                        table.insert(existingKeywords, keywordName)
+                        break
+                    end
+                end
+
+                if not alreadyHas then
+                    -- Find or create keyword in catalog
+                    local keyword = catalog:createKeyword(keywordName, {}, false, nil, true)
+
+                    if keyword then
+                        -- Add keyword to photo
+                        photo:addKeyword(keyword)
+                        table.insert(addedKeywords, keywordName)
+                        logger:debug("Added keyword '" .. keywordName .. "' to photo " .. photoId)
+                    else
+                        logger:warn("Failed to create/find keyword: " .. keywordName)
+                    end
+                end
+            end
+
+            return {
+                photoId = photoId,
+                addedKeywords = addedKeywords,
+                existingKeywords = existingKeywords,
+                totalRequested = #keywords,
+                newlyAdded = #addedKeywords,
+                alreadyPresent = #existingKeywords
+            }
+        end, { timeout = 10 })
+    end)
+
+    if writeSuccess then
+        logger:info("Successfully added keywords to photo " .. photoId)
+        wrappedCallback(ErrorUtils.createSuccess(writeError))
+    else
+        logger:error("Failed to add keywords: " .. tostring(writeError))
+        wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.OPERATION_FAILED,
+            "Failed to add keywords: " .. tostring(writeError)))
+    end
+end
+
 -- Batch get formatted metadata for multiple photos
 function CatalogModule.batchGetFormattedMetadata(params, callback)
     ensureLrModules()
     local logger = getLogger()
     local photoIds = params.photoIds
     local keys = params.keys or {"fileName", "dateTimeOriginal", "rating"}
-    
+
     logger:debug("Batch metadata - photoIds type: " .. type(photoIds))
     if photoIds then
         logger:debug("Batch metadata - photoIds length: " .. tostring(#photoIds))
@@ -747,17 +843,17 @@ function CatalogModule.batchGetFormattedMetadata(params, callback)
             end
         end
     end
-    
+
     if not photoIds then
         callback({
             error = {
-                code = "MISSING_PHOTO_IDS", 
+                code = "MISSING_PHOTO_IDS",
                 message = "Photo IDs parameter is missing"
             }
         })
         return
     end
-    
+
     if type(photoIds) ~= "table" then
         callback({
             error = {
@@ -767,7 +863,7 @@ function CatalogModule.batchGetFormattedMetadata(params, callback)
         })
         return
     end
-    
+
     if #photoIds == 0 then
         callback({
             error = {
@@ -777,7 +873,7 @@ function CatalogModule.batchGetFormattedMetadata(params, callback)
         })
         return
     end
-    
+
     logger:debug("Batch getting metadata for " .. #photoIds .. " photos")
     logger:debug("Keys type: " .. type(keys))
     if type(keys) == "table" then
@@ -788,9 +884,9 @@ function CatalogModule.batchGetFormattedMetadata(params, callback)
     else
         logger:debug("Keys value: " .. tostring(keys))
     end
-    
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
         local photos = {}
         for _, photoId in ipairs(photoIds) do
@@ -799,7 +895,7 @@ function CatalogModule.batchGetFormattedMetadata(params, callback)
                 table.insert(photos, photo)
             end
         end
-        
+
         if #photos == 0 then
             callback({
                 result = {
@@ -810,17 +906,17 @@ function CatalogModule.batchGetFormattedMetadata(params, callback)
             })
             return
         end
-        
+
         -- Use batch API for efficiency
         local batchResults = catalog:batchGetFormattedMetadata(photos, keys)
-        
+
         local results = {}
         for i, photo in ipairs(photos) do
             local metadata = batchResults[i] or {}
             metadata.id = photo.localIdentifier
             table.insert(results, metadata)
         end
-        
+
         callback({
             result = {
                 metadata = results,

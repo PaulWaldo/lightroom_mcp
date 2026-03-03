@@ -435,9 +435,12 @@ function CatalogModule.setSelectedPhotos(params, callback)
     end)
 
     if writeSuccess then
-        logger:info("Successfully set selection to " .. writeError.selected .. " photos")  -- writeError contains results when successful
+        -- writeError contains the result data when successful, but may be nil
+        local resultData = writeError or {}
+        local selectedCount = resultData.selected or 0
+        logger:info("Successfully set selection to " .. selectedCount .. " photos")
         callback({
-            result = writeError  -- writeError is actually the success result
+            result = resultData
         })
     else
         logger:error("Failed to set photo selection (write access): " .. tostring(writeError))
@@ -818,8 +821,10 @@ function CatalogModule.addPhotoKeywords(params, callback)
     end)
 
     if writeSuccess then
+        -- writeError contains the result data when successful, but may be nil
+        local resultData = writeError or {}
         logger:info("Successfully added keywords to photo " .. photoId)
-        wrappedCallback(ErrorUtils.createSuccess(writeError))
+        wrappedCallback(ErrorUtils.createSuccess(resultData))
     else
         logger:error("Failed to add keywords: " .. tostring(writeError))
         wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.OPERATION_FAILED,

@@ -140,11 +140,11 @@ class PreviewServer(LightroomServerModule):
 
     def _analyze_histogram_from_base64(self, base64_data: str, channels: str = "all") -> Dict[str, Any]:
         """Analyze histogram from base64 image data
-        
+
         Args:
             base64_data: Base64 encoded JPEG data
             channels: "all", "rgb", or "luminance"
-        
+
         Returns:
             Dictionary with histogram data and statistics
         """
@@ -152,32 +152,32 @@ class PreviewServer(LightroomServerModule):
             # Decode base64 to binary and open with PIL
             jpeg_data = base64.b64decode(base64_data)
             img = Image.open(io.BytesIO(jpeg_data))
-            
+
             # Convert to RGB if not already
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            
+
             # Convert to numpy array
             img_array = np.array(img)
             height, width, channels_count = img_array.shape
-            
+
             result = {
                 "success": True,
                 "image_dimensions": f"{width}x{height}",
                 "total_pixels": width * height
             }
-            
+
             if channels in ["all", "rgb"]:
                 # RGB channel histograms
                 red_channel = img_array[:, :, 0].flatten()
                 green_channel = img_array[:, :, 1].flatten()
                 blue_channel = img_array[:, :, 2].flatten()
-                
+
                 # Calculate histograms (256 bins for 0-255 range)
                 red_hist, _ = np.histogram(red_channel, bins=256, range=(0, 256))
                 green_hist, _ = np.histogram(green_channel, bins=256, range=(0, 256))
                 blue_hist, _ = np.histogram(blue_channel, bins=256, range=(0, 256))
-                
+
                 # RGB statistics
                 result["rgb"] = {
                     "histograms": {
@@ -209,7 +209,7 @@ class PreviewServer(LightroomServerModule):
                         }
                     }
                 }
-                
+
                 # Clipping analysis for RGB
                 total_pixels = width * height
                 result["rgb"]["clipping"] = {
@@ -234,16 +234,16 @@ class PreviewServer(LightroomServerModule):
                         "blue": float(np.sum(blue_channel == 255) / total_pixels * 100)
                     }
                 }
-            
+
             if channels in ["all", "luminance"]:
                 # Luminance histogram (weighted average of RGB)
                 # Standard luminance weights: 0.299*R + 0.587*G + 0.114*B
-                luminance = (0.299 * img_array[:, :, 0] + 
-                           0.587 * img_array[:, :, 1] + 
+                luminance = (0.299 * img_array[:, :, 0] +
+                           0.587 * img_array[:, :, 1] +
                            0.114 * img_array[:, :, 2]).flatten().astype(np.uint8)
-                
+
                 luminance_hist, _ = np.histogram(luminance, bins=256, range=(0, 256))
-                
+
                 result["luminance"] = {
                     "histogram": luminance_hist.tolist(),
                     "statistics": {
@@ -265,9 +265,9 @@ class PreviewServer(LightroomServerModule):
                         "highlights_percent": float(np.sum(luminance >= 170) / len(luminance) * 100)  # 170-255
                     }
                 }
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Histogram analysis failed: {e}")
             return {
@@ -852,21 +852,23 @@ class PreviewServer(LightroomServerModule):
                 "quality": quality
             })
 
+            # Extract from correct key: "results" not "previews"
+            # Lua returns: {processed, successful, results}
             return {
                 "success": True,
-                "count": len(result.get("previews", [])),
-                "previews": result.get("previews", [])
+                "count": result.get("successful", 0),
+                "previews": result.get("results", [])
             }
 
         @self.server.tool
         async def histogram_analyze_current() -> Dict[str, Any]:
             """
             Analyze RGB and luminance histograms of the currently selected photo.
-            
+
             Generates a small preview (640px) optimized for histogram analysis,
             then calculates histograms, statistics, and clipping analysis for
             RGB channels and luminance.
-            
+
             Returns:
                 Dictionary with histogram data, statistics, and analysis
             """
@@ -879,9 +881,9 @@ class PreviewServer(LightroomServerModule):
                         "error": "No photo selected in Lightroom",
                         "hint": "Please select a photo and try again"
                     }
-                
+
                 photo_id = str(selected["photos"][0]["id"])
-                
+
                 # Generate small, low-quality preview for histogram analysis
                 params = {
                     "photoId": photo_id,
@@ -889,47 +891,47 @@ class PreviewServer(LightroomServerModule):
                     "quality": 30,    # Low quality, we only need pixel data
                     "base64": True
                 }
-                
+
                 result = await self.execute_command("generatePreview", params)
-                
+
                 # Handle chunked transfer if needed
                 if result.get("preview") == "CHUNKED_TRANSFER":
                     preview_id = result.get("previewId")
                     chunk_size = result.get("chunkSize", 0)
                     info = result.get("info", {})
-                    
+
                     # Download chunks
                     chunks = []
                     chunk_index = 0
-                    
+
                     while True:
                         chunk_result = await self.execute_command("getPreviewChunk", {
                             "previewId": preview_id,
                             "chunkIndex": chunk_index,
                             "chunkSize": chunk_size
                         })
-                        
+
                         chunks.append(chunk_result.get("chunk", ""))
-                        
+
                         if chunk_result.get("isLastChunk", False):
                             break
-                        
+
                         chunk_index += 1
-                    
+
                     full_data = "".join(chunks)
                 else:
                     full_data = result.get("preview")
                     info = result.get("info", {})
-                
+
                 if not full_data:
                     return {
                         "success": False,
                         "error": "No preview data returned from Lightroom"
                     }
-                
+
                 # Analyze histogram from the preview data
                 histogram_result = self._analyze_histogram_from_base64(full_data, "all")
-                
+
                 if histogram_result.get("success"):
                     # Add metadata
                     histogram_result.update({
@@ -938,9 +940,9 @@ class PreviewServer(LightroomServerModule):
                         "preview_quality": 30,
                         "analysis_type": "RGB + Luminance"
                     })
-                
+
                 return histogram_result
-                
+
             except Exception as e:
                 logger.error(f"Histogram analysis failed: {e}")
                 return {
@@ -953,11 +955,11 @@ class PreviewServer(LightroomServerModule):
         async def histogram_analyze_rgb() -> Dict[str, Any]:
             """
             Analyze RGB channel histograms of the currently selected photo.
-            
+
             Generates a small preview optimized for analysis, then calculates
             histograms, statistics, and clipping analysis for Red, Green,
             and Blue channels only.
-            
+
             Returns:
                 Dictionary with RGB histogram data and statistics
             """
@@ -970,9 +972,9 @@ class PreviewServer(LightroomServerModule):
                         "error": "No photo selected in Lightroom",
                         "hint": "Please select a photo and try again"
                     }
-                
+
                 photo_id = str(selected["photos"][0]["id"])
-                
+
                 # Generate small, low-quality preview for histogram analysis
                 params = {
                     "photoId": photo_id,
@@ -980,45 +982,45 @@ class PreviewServer(LightroomServerModule):
                     "quality": 30,    # Low quality, we only need pixel data
                     "base64": True
                 }
-                
+
                 result = await self.execute_command("generatePreview", params)
-                
+
                 # Handle chunked transfer if needed
                 if result.get("preview") == "CHUNKED_TRANSFER":
                     preview_id = result.get("previewId")
                     chunk_size = result.get("chunkSize", 0)
-                    
+
                     # Download chunks
                     chunks = []
                     chunk_index = 0
-                    
+
                     while True:
                         chunk_result = await self.execute_command("getPreviewChunk", {
                             "previewId": preview_id,
                             "chunkIndex": chunk_index,
                             "chunkSize": chunk_size
                         })
-                        
+
                         chunks.append(chunk_result.get("chunk", ""))
-                        
+
                         if chunk_result.get("isLastChunk", False):
                             break
-                        
+
                         chunk_index += 1
-                    
+
                     full_data = "".join(chunks)
                 else:
                     full_data = result.get("preview")
-                
+
                 if not full_data:
                     return {
                         "success": False,
                         "error": "No preview data returned from Lightroom"
                     }
-                
+
                 # Analyze RGB histogram only
                 histogram_result = self._analyze_histogram_from_base64(full_data, "rgb")
-                
+
                 if histogram_result.get("success"):
                     # Add metadata
                     histogram_result.update({
@@ -1027,9 +1029,9 @@ class PreviewServer(LightroomServerModule):
                         "preview_quality": 30,
                         "analysis_type": "RGB channels only"
                     })
-                
+
                 return histogram_result
-                
+
             except Exception as e:
                 logger.error(f"RGB histogram analysis failed: {e}")
                 return {
@@ -1042,11 +1044,11 @@ class PreviewServer(LightroomServerModule):
         async def histogram_analyze_luminance() -> Dict[str, Any]:
             """
             Analyze luminance histogram of the currently selected photo.
-            
+
             Generates a small preview optimized for analysis, then calculates
             luminance histogram, statistics, clipping analysis, and tonal
             distribution (shadows/midtones/highlights).
-            
+
             Returns:
                 Dictionary with luminance histogram data and tonal analysis
             """
@@ -1059,9 +1061,9 @@ class PreviewServer(LightroomServerModule):
                         "error": "No photo selected in Lightroom",
                         "hint": "Please select a photo and try again"
                     }
-                
+
                 photo_id = str(selected["photos"][0]["id"])
-                
+
                 # Generate small, low-quality preview for histogram analysis
                 params = {
                     "photoId": photo_id,
@@ -1069,45 +1071,45 @@ class PreviewServer(LightroomServerModule):
                     "quality": 30,    # Low quality, we only need pixel data
                     "base64": True
                 }
-                
+
                 result = await self.execute_command("generatePreview", params)
-                
+
                 # Handle chunked transfer if needed
                 if result.get("preview") == "CHUNKED_TRANSFER":
                     preview_id = result.get("previewId")
                     chunk_size = result.get("chunkSize", 0)
-                    
+
                     # Download chunks
                     chunks = []
                     chunk_index = 0
-                    
+
                     while True:
                         chunk_result = await self.execute_command("getPreviewChunk", {
                             "previewId": preview_id,
                             "chunkIndex": chunk_index,
                             "chunkSize": chunk_size
                         })
-                        
+
                         chunks.append(chunk_result.get("chunk", ""))
-                        
+
                         if chunk_result.get("isLastChunk", False):
                             break
-                        
+
                         chunk_index += 1
-                    
+
                     full_data = "".join(chunks)
                 else:
                     full_data = result.get("preview")
-                
+
                 if not full_data:
                     return {
                         "success": False,
                         "error": "No preview data returned from Lightroom"
                     }
-                
+
                 # Analyze luminance histogram only
                 histogram_result = self._analyze_histogram_from_base64(full_data, "luminance")
-                
+
                 if histogram_result.get("success"):
                     # Add metadata
                     histogram_result.update({
@@ -1116,9 +1118,9 @@ class PreviewServer(LightroomServerModule):
                         "preview_quality": 30,
                         "analysis_type": "Luminance only"
                     })
-                
+
                 return histogram_result
-                
+
             except Exception as e:
                 logger.error(f"Luminance histogram analysis failed: {e}")
                 return {

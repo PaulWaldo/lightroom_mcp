@@ -100,30 +100,54 @@ class CatalogServer(LightroomServerModule):
         
         @self.server.tool
         async def catalog_search_photos(
-            criteria: Dict[str, Any],
+            keyword: Optional[str] = None,
+            rating_min: Optional[int] = None,
+            rating_max: Optional[int] = None,
+            file_format: Optional[str] = None,
+            date_after: Optional[str] = None,
+            date_before: Optional[str] = None,
             limit: int = 100
         ) -> Dict[str, Any]:
             """
             Search photos with flexible criteria.
-            
+
             Powerful search for AI agents to find specific photos.
-            
+
             Args:
-                criteria: Search criteria dict with fields like:
-                    - rating: {"min": 3, "max": 5}
-                    - captureDate: {"after": "2023-01-01"}
-                    - keywords: ["landscape", "sunset"]
-                    - fileFormat: "RAW"
-                limit: Maximum results
-                
+                keyword: Search by keyword name
+                rating_min: Minimum star rating (1-5)
+                rating_max: Maximum star rating (1-5)
+                file_format: Filter by format (RAW, JPEG, etc.)
+                date_after: Photos after this date (YYYY-MM-DD)
+                date_before: Photos before this date (YYYY-MM-DD)
+                limit: Maximum results (default 100)
+
             Returns:
                 Matching photos
             """
+            criteria = {}
+            if keyword:
+                criteria["keyword"] = keyword
+            if rating_min is not None or rating_max is not None:
+                criteria["rating"] = {}
+                if rating_min is not None:
+                    criteria["rating"]["min"] = rating_min
+                if rating_max is not None:
+                    criteria["rating"]["max"] = rating_max
+            if file_format:
+                criteria["fileFormat"] = file_format
+            if date_after:
+                criteria["captureDate"] = criteria.get("captureDate", {})
+                criteria["captureDate"]["after"] = date_after
+            if date_before:
+                criteria["captureDate"] = criteria.get("captureDate", {})
+                criteria["captureDate"]["before"] = date_before
+
             result = await self.execute_command("searchPhotos", {
                 "criteria": criteria,
                 "limit": limit
             })
-            
+
             return {
                 "success": True,
                 "count": len(result.get("photos", [])),
@@ -175,20 +199,37 @@ class CatalogServer(LightroomServerModule):
             }
         
         @self.server.tool
-        async def catalog_get_keywords() -> Dict[str, Any]:
+        async def catalog_get_keywords(
+            limit: int = 500,
+            offset: int = 0,
+            include_counts: bool = False
+        ) -> Dict[str, Any]:
             """
-            Get all keywords used in the catalog.
-            
+            Get keywords in the catalog with pagination.
+
             Helps AI agents understand photo categorization.
-            
+            Use include_counts=True for photo counts (slower).
+
+            Args:
+                limit: Max keywords to return (default 500)
+                offset: Starting position for pagination
+                include_counts: Include photo count per keyword (slow for large catalogs)
+
             Returns:
-                Keywords with usage counts
+                Keywords with optional usage counts, pagination info
             """
-            result = await self.execute_command("getKeywords")
-            
+            result = await self.execute_command("getKeywords", {
+                "limit": limit,
+                "offset": offset,
+                "includeCounts": include_counts
+            })
+
             return {
                 "success": True,
-                "count": len(result.get("keywords", [])),
+                "count": result.get("count", 0),
+                "total": result.get("total", 0),
+                "offset": result.get("offset", 0),
+                "has_more": result.get("hasMore", False),
                 "keywords": result.get("keywords", [])
             }
         

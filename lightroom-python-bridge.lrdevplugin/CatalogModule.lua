@@ -690,31 +690,68 @@ function CatalogModule.addPhotoKeywords(params, callback)
     end)
 end
 
--- Get keywords in catalog
+-- Get keywords in catalog (with pagination and optional photo counts)
 function CatalogModule.getKeywords(params, callback)
     ensureLrModules()
     local logger = getLogger()
-    
-    logger:debug("Getting keywords from catalog")
-    
+
+    local limit = (params and params.limit) or 500
+    local offset = (params and params.offset) or 0
+    local includeCounts = (params and params.includeCounts) or false
+
+    logger:info("Getting keywords (limit=" .. limit .. ", offset=" .. offset .. ", counts=" .. tostring(includeCounts) .. ")")
+
     local catalog = LrApplication.activeCatalog()
-    
+
     catalog:withReadAccessDo(function()
-        local keywords = catalog:getKeywords()
-        
-        local resultKeywords = {}
-        for _, keyword in ipairs(keywords) do
-            table.insert(resultKeywords, {
-                id = keyword.localIdentifier,
-                name = keyword:getName(),
-                photoCount = #keyword:getPhotos()
-            })
+        local allKeywords = catalog:getKeywords()
+        local total = #allKeywords
+
+        -- Collect ALL keywords with hierarchy (fast — no photo queries)
+        local function collectKeywords(kwList, parent)
+            local results = {}
+            for _, keyword in ipairs(kwList) do
+                local entry = {
+                    id = keyword.localIdentifier,
+                    name = keyword:getName(),
+                    parent = parent
+                }
+                if includeCounts then
+                    entry.photoCount = #keyword:getPhotos()
+                end
+                table.insert(results, entry)
+                -- Recurse into children
+                local children = keyword:getChildren()
+                if children and #children > 0 then
+                    local childResults = collectKeywords(children, keyword:getName())
+                    for _, child in ipairs(childResults) do
+                        table.insert(results, child)
+                    end
+                end
+            end
+            return results
         end
-        
+
+        local allCollected = collectKeywords(allKeywords, nil)
+        local totalCollected = #allCollected
+
+        -- Apply pagination
+        local resultKeywords = {}
+        local endIdx = math.min(offset + limit, totalCollected)
+        for i = offset + 1, endIdx do
+            table.insert(resultKeywords, allCollected[i])
+        end
+
+        logger:info("Returning " .. #resultKeywords .. " of " .. totalCollected .. " total keywords")
+
         callback({
             result = {
                 keywords = resultKeywords,
-                count = #resultKeywords
+                count = #resultKeywords,
+                total = totalCollected,
+                offset = offset,
+                limit = limit,
+                hasMore = (offset + limit) < totalCollected
             }
         })
     end)

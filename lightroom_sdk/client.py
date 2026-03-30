@@ -80,11 +80,11 @@ class LightroomClient:
         import logging
         logger = logging.getLogger(__name__)
 
-        logger.info("🔍 Checking for Lightroom Classic...")
+        logger.info("Checking for Lightroom Classic...")
 
         try:
             await self.connect()
-            logger.info("✅ Lightroom is ready!")
+            logger.info("Lightroom is ready!")
             return True
         except Exception as e:
             logger.warning(f"Lightroom not ready: {e}")

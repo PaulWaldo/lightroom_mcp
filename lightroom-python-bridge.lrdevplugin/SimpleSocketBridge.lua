@@ -115,6 +115,9 @@ local function startSocketServer()
                     -- Set up command router to send responses via HTTP POST
                     -- LrSocket receive mode cannot send data back through the socket.
                     -- Instead, POST responses to Python's HTTP callback server.
+                    -- CRITICAL: LrHttp.post() yields, so it CANNOT be called from
+                    -- inside withReadAccessDo/withWriteAccessDo. We wrap every send
+                    -- in its own async task to avoid blocking sync catalog handlers.
                     if commandRouter then
                         commandRouter:setSocketBridge({
                             send = function(jsonData)
@@ -127,20 +130,25 @@ local function startSocketServer()
                                     return false
                                 end
 
-                                -- POST to Python's HTTP callback server
-                                local url = "http://localhost:54400/response"
-                                local headers = {
-                                    { field = "Content-Type", value = "application/json" }
-                                }
-                                local body, respHeaders = LrHttp.post(url, jsonData, headers, "POST", 5)
+                                -- Fire-and-forget async task for HTTP POST
+                                -- This allows send() to return immediately even when
+                                -- called from inside withReadAccessDo
+                                LrTasks.startAsyncTask(function()
+                                    local LrHttp = import 'LrHttp'
+                                    local url = "http://localhost:54400/response"
+                                    local headers = {
+                                        { field = "Content-Type", value = "application/json" }
+                                    }
+                                    local body, respHeaders = LrHttp.post(url, jsonData, headers, "POST", 5)
 
-                                if body then
-                                    logger:debug("HTTP response sent successfully")
-                                    return true
-                                else
-                                    logger:error("HTTP response send failed")
-                                    return false
-                                end
+                                    if body then
+                                        logger:debug("HTTP response sent successfully")
+                                    else
+                                        logger:error("HTTP response send failed")
+                                    end
+                                end)
+
+                                return true  -- Return immediately
                             end
                         })
 

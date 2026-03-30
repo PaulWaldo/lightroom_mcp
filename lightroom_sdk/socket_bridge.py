@@ -141,13 +141,10 @@ class SocketBridge:
                 self.end_headers()
                 self.wfile.write(b'ok')
 
-                # Process the response in the asyncio event loop
+                # Dispatch response to the asyncio event loop (thread-safe)
                 try:
                     message = json.loads(body.decode('utf-8'))
-                    asyncio.run_coroutine_threadsafe(
-                        bridge._handle_message(message),
-                        bridge._loop
-                    )
+                    bridge._dispatch_message(message)
                 except json.JSONDecodeError as e:
                     logger.warning(f"Invalid JSON in HTTP callback: {e}")
 
@@ -161,19 +158,24 @@ class SocketBridge:
         )
         self._http_thread.start()
 
-    async def _handle_message(self, message: Dict[str, Any]) -> None:
-        """Route received messages to appropriate handlers"""
-        # Handle events
+    def _dispatch_message(self, message: Dict[str, Any]) -> None:
+        """Thread-safe dispatch of messages from HTTP callback to asyncio futures.
+        Called from the HTTP server thread — uses call_soon_threadsafe."""
+
+        # Handle events (just log, no future to resolve)
         if 'event' in message:
             logger.debug(f"Event received: {message['event']}")
             return
 
-        # Handle responses — match by request ID
+        # Handle responses — match by request ID and resolve the future
         request_id = message.get('id')
         if request_id and request_id in self._pending_requests:
             future = self._pending_requests.pop(request_id)
             if not future.cancelled():
-                future.set_result(message)
+                # Thread-safe: schedule set_result on the event loop
+                self._loop.call_soon_threadsafe(future.set_result, message)
+        else:
+            logger.debug(f"No pending request for id: {request_id}")
 
     async def send_command(
         self,
@@ -193,8 +195,11 @@ class SocketBridge:
             'params': params or {}
         }
 
+        # Capture the running event loop (may differ from connect-time loop)
+        self._loop = asyncio.get_running_loop()
+
         # Create future for response
-        future = asyncio.Future()
+        future = self._loop.create_future()
         self._pending_requests[request_id] = future
 
         try:

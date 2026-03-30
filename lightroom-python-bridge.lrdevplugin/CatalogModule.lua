@@ -707,51 +707,28 @@ function CatalogModule.getKeywords(params, callback)
         local allKeywords = catalog:getKeywords()
         local total = #allKeywords
 
-        -- Collect ALL keywords with hierarchy (fast — no photo queries)
-        local function collectKeywords(kwList, parent)
-            local results = {}
-            for _, keyword in ipairs(kwList) do
-                local entry = {
-                    id = keyword.localIdentifier,
-                    name = keyword:getName(),
-                    parent = parent
-                }
-                if includeCounts then
-                    entry.photoCount = #keyword:getPhotos()
-                end
-                table.insert(results, entry)
-                -- Recurse into children
-                local children = keyword:getChildren()
-                if children and #children > 0 then
-                    local childResults = collectKeywords(children, keyword:getName())
-                    for _, child in ipairs(childResults) do
-                        table.insert(results, child)
-                    end
-                end
-            end
-            return results
-        end
-
-        local allCollected = collectKeywords(allKeywords, nil)
-        local totalCollected = #allCollected
-
-        -- Apply pagination
+        -- Fast flat list — names and IDs only, no recursion, no photo queries
+        -- getChildren() and getPhotos() are too slow for large catalogs
         local resultKeywords = {}
-        local endIdx = math.min(offset + limit, totalCollected)
+        local endIdx = math.min(offset + limit, total)
         for i = offset + 1, endIdx do
-            table.insert(resultKeywords, allCollected[i])
+            local keyword = allKeywords[i]
+            table.insert(resultKeywords, {
+                id = keyword.localIdentifier,
+                name = keyword:getName()
+            })
         end
 
-        logger:info("Returning " .. #resultKeywords .. " of " .. totalCollected .. " total keywords")
+        logger:info("Returning " .. #resultKeywords .. " of " .. total .. " top-level keywords")
 
         callback({
             result = {
                 keywords = resultKeywords,
                 count = #resultKeywords,
-                total = totalCollected,
+                total = total,
                 offset = offset,
                 limit = limit,
-                hasMore = (offset + limit) < totalCollected
+                hasMore = (offset + limit) < total
             }
         })
     end)

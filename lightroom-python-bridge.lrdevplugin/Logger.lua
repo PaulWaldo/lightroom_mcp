@@ -10,10 +10,7 @@ function Logger:init(pluginName)
     self.logger = LrLogger(pluginName)
     self.logger:enable("logfile")
     self.logLevel = 'trace'  -- Default to debug for development
-    self.logger:debug("TEST")
-    local l = LrLogger("WTF")
-    l:enable("logfile")
-    l:debug("test")
+    self.logger:debug("Logger initialized")
 end
 
 -- Log level methods

@@ -637,6 +637,59 @@ function CatalogModule.getCollections(params, callback)
     end)
 end
 
+-- Add keywords to a photo
+function CatalogModule.addPhotoKeywords(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local photoId = params and tonumber(params.photoId)
+    local keywords = params and params.keywords
+
+    if not photoId then
+        callback({ error = { code = "MISSING_PARAM", message = "photoId is required" } })
+        return
+    end
+    if not keywords or type(keywords) ~= "table" or #keywords == 0 then
+        callback({ error = { code = "MISSING_PARAM", message = "keywords array is required" } })
+        return
+    end
+
+    logger:info("Adding " .. #keywords .. " keywords to photo " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withWriteAccessDo("Add Keywords", function()
+        local photo = catalog:getPhotoByLocalId(photoId)
+        if not photo then
+            callback({ error = { code = "PHOTO_NOT_FOUND", message = "Photo not found: " .. photoId } })
+            return
+        end
+
+        local addedKeywords = {}
+        for _, keywordName in ipairs(keywords) do
+            -- createKeyword returns existing keyword if it already exists
+            local keyword = catalog:createKeyword(keywordName, {}, true, nil, true)
+            if keyword then
+                photo:addKeyword(keyword)
+                table.insert(addedKeywords, keywordName)
+                logger:debug("Added keyword: " .. keywordName)
+            else
+                logger:warn("Failed to create keyword: " .. keywordName)
+            end
+        end
+
+        logger:info("Added " .. #addedKeywords .. " keywords to photo " .. photoId)
+
+        callback({
+            result = {
+                photoId = photoId,
+                keywordsAdded = addedKeywords,
+                count = #addedKeywords
+            }
+        })
+    end)
+end
+
 -- Get keywords in catalog
 function CatalogModule.getKeywords(params, callback)
     ensureLrModules()

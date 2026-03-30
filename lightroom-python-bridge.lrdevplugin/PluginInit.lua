@@ -333,6 +333,8 @@ local function registerApiCommands()
     router:register("catalog.getCollections", CatalogModule.getCollections, "sync")
     router:register("catalog.getKeywords", CatalogModule.getKeywords, "sync")
     router:register("catalog.addPhotoKeywords", CatalogModule.addPhotoKeywords, "sync")
+    router:register("catalog.getKeywordPhotos", CatalogModule.getKeywordPhotos, "sync")
+    router:register("catalog.setPhotoMetadata", CatalogModule.setPhotoMetadata, "sync")
     router:register("catalog.getFolders", CatalogModule.getFolders, "sync")
     router:register("catalog.batchGetFormattedMetadata", CatalogModule.batchGetFormattedMetadata, "sync")
 

@@ -311,7 +311,75 @@ class CatalogServer(LightroomServerModule):
                 "keywords_added": keywords,
                 "count": len(keywords)
             }
-        
+
+        @self.server.tool
+        async def catalog_get_keyword_photos(
+            keyword_name: str,
+            match_mode: str = "exact",
+            limit: int = 100,
+            offset: int = 0
+        ) -> Dict[str, Any]:
+            """
+            Find all photos that have a specific keyword assigned.
+
+            Args:
+                keyword_name: Keyword to search for
+                match_mode: How to match — "exact", "startsWith", or "contains"
+                limit: Max photos to return (default 100)
+                offset: Starting position for pagination
+
+            Returns:
+                Photos with the keyword, pagination info
+            """
+            result = await self.execute_command("getKeywordPhotos", {
+                "keywordName": keyword_name,
+                "matchMode": match_mode,
+                "limit": limit,
+                "offset": offset
+            })
+
+            return {
+                "success": True,
+                "keyword": keyword_name,
+                "match_mode": match_mode,
+                "matched_keywords": result.get("matchedKeywords", 0),
+                "count": result.get("count", 0),
+                "total": result.get("total", 0),
+                "has_more": result.get("hasMore", False),
+                "photos": result.get("photos", [])
+            }
+
+        @self.server.tool
+        async def catalog_set_photo_metadata(
+            photo_id: Union[str, int],
+            field: str,
+            value: str
+        ) -> Dict[str, Any]:
+            """
+            Set a metadata field on a photo (Artist, Caption, etc.).
+
+            Args:
+                photo_id: Photo ID
+                field: Metadata field name (artist, caption, copyright, title,
+                       headline, city, state, country, location, creator)
+                value: Value to set
+
+            Returns:
+                Confirmation of the update
+            """
+            result = await self.execute_command("setPhotoMetadata", {
+                "photoId": str(photo_id),
+                "field": field,
+                "value": value
+            })
+
+            return {
+                "success": True,
+                "photo_id": str(photo_id),
+                "field": field,
+                "value": value
+            }
+
         @self.server.tool
         async def catalog_get_photo_info(
             photo_id: Union[str, int]

@@ -690,6 +690,149 @@ function CatalogModule.addPhotoKeywords(params, callback)
     end)
 end
 
+-- Get photos that have a specific keyword (by name, supports partial match)
+function CatalogModule.getKeywordPhotos(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordName = params and params.keywordName
+    local matchMode = (params and params.matchMode) or "exact"  -- exact, startsWith, contains
+    local limit = (params and params.limit) or 100
+    local offset = (params and params.offset) or 0
+
+    if not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordName is required" } })
+        return
+    end
+
+    logger:info("Finding photos with keyword '" .. keywordName .. "' (mode=" .. matchMode .. ")")
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+        local matchedPhotos = {}
+        local seenIds = {}
+        local matchedKeywordCount = 0
+
+        -- Find matching keywords
+        for _, keyword in ipairs(allKeywords) do
+            local name = keyword:getName()
+            local isMatch = false
+
+            if matchMode == "exact" and name == keywordName then
+                isMatch = true
+            elseif matchMode == "startsWith" and name:sub(1, #keywordName) == keywordName then
+                isMatch = true
+            elseif matchMode == "contains" and name:find(keywordName, 1, true) then
+                isMatch = true
+            end
+
+            if isMatch then
+                matchedKeywordCount = matchedKeywordCount + 1
+                local photos = keyword:getPhotos()
+                for _, photo in ipairs(photos) do
+                    local id = photo.localIdentifier
+                    if not seenIds[id] then
+                        seenIds[id] = true
+                        table.insert(matchedPhotos, {
+                            id = id,
+                            filename = photo:getFormattedMetadata("fileName"),
+                            path = photo:getRawMetadata("path")
+                        })
+                    end
+                end
+            end
+        end
+
+        -- Apply pagination
+        local total = #matchedPhotos
+        local resultPhotos = {}
+        local endIdx = math.min(offset + limit, total)
+        for i = offset + 1, endIdx do
+            table.insert(resultPhotos, matchedPhotos[i])
+        end
+
+        logger:info("Found " .. total .. " photos across " .. matchedKeywordCount .. " matching keywords")
+
+        callback({
+            result = {
+                photos = resultPhotos,
+                count = #resultPhotos,
+                total = total,
+                matchedKeywords = matchedKeywordCount,
+                offset = offset,
+                limit = limit,
+                hasMore = (offset + limit) < total
+            }
+        })
+    end)
+end
+
+-- Set metadata field on a photo (Artist, Caption, etc.)
+function CatalogModule.setPhotoMetadata(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local photoId = params and tonumber(params.photoId)
+    local field = params and params.field
+    local value = params and params.value
+
+    if not photoId then
+        callback({ error = { code = "MISSING_PARAM", message = "photoId is required" } })
+        return
+    end
+    if not field then
+        callback({ error = { code = "MISSING_PARAM", message = "field is required" } })
+        return
+    end
+
+    -- Whitelist of writable metadata fields
+    local writableFields = {
+        artist = true, caption = true, copyright = true,
+        title = true, headline = true,
+        city = true, state = true, country = true,
+        isoCountryCode = true, location = true,
+        creator = true, creatorJobTitle = true,
+        creatorAddress = true, creatorCity = true,
+        creatorStateProvince = true, creatorPostalCode = true,
+        creatorCountry = true, creatorPhone = true,
+        creatorEmail = true, creatorUrl = true
+    }
+
+    if not writableFields[field] then
+        callback({ error = {
+            code = "INVALID_PARAM",
+            message = "Field '" .. field .. "' is not writable. Allowed: artist, caption, copyright, title, headline, city, state, country, location, creator"
+        }})
+        return
+    end
+
+    logger:info("Setting " .. field .. " = '" .. tostring(value) .. "' on photo " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withWriteAccessDo("Set Photo Metadata", function()
+        local photo = catalog:getPhotoByLocalId(photoId)
+        if not photo then
+            callback({ error = { code = "PHOTO_NOT_FOUND", message = "Photo not found: " .. photoId } })
+            return
+        end
+
+        photo:setRawMetadata(field, value)
+
+        logger:info("Set " .. field .. " on photo " .. photoId)
+
+        callback({
+            result = {
+                photoId = photoId,
+                field = field,
+                value = value
+            }
+        })
+    end)
+end
+
 -- Get keywords in catalog (with pagination and optional photo counts)
 function CatalogModule.getKeywords(params, callback)
     ensureLrModules()

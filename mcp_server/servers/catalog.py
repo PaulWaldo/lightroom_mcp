@@ -344,8 +344,7 @@ class CatalogServer(LightroomServerModule):
 
             return {
                 "success": True,
-                "keyword": keyword_name,
-                "match_mode": match_mode,
+                "keyword": keyword_name or f"id:{keyword_id}",
                 "matched_keywords": result.get("matchedKeywords", 0),
                 "count": result.get("count", 0),
                 "total": result.get("total", 0),

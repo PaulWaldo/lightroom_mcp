@@ -13,10 +13,21 @@ local LrPathUtils = import 'LrPathUtils'
 -- Port file in user's home directory (cross-platform)
 local portFilePath = LrPathUtils.child(LrPathUtils.getStandardFilePath("home"), "lightroom_ports.txt")
 
+-- Debug log file (readable by Claude)
+local debugLogPath = LrPathUtils.child(LrPathUtils.getStandardFilePath("home"), "lightroom_bridge_debug.log")
+local function debugLog(msg)
+    local f = io.open(debugLogPath, "a")
+    if f then
+        f:write(os.date("%H:%M:%S") .. " " .. tostring(msg) .. "\n")
+        f:close()
+    end
+end
+
 -- Module-level state
 local commandRouter = nil
 local responseSocket = nil  -- Store socket ref for sending responses
 local isRestarting = false
+local responseQueue = {}    -- Queue for HTTP responses (sent from main loop)
 
 -- Get Phase 3 modules from global state
 local function getPhase3Modules()
@@ -116,8 +127,8 @@ local function startSocketServer()
                     -- LrSocket receive mode cannot send data back through the socket.
                     -- Instead, POST responses to Python's HTTP callback server.
                     -- CRITICAL: LrHttp.post() yields, so it CANNOT be called from
-                    -- inside withReadAccessDo/withWriteAccessDo. We wrap every send
-                    -- in its own async task to avoid blocking sync catalog handlers.
+                    -- inside withReadAccessDo/withWriteAccessDo. Instead, we queue
+                    -- responses and the main keep-alive loop sends them via HTTP.
                     if commandRouter then
                         commandRouter:setSocketBridge({
                             send = function(jsonData)
@@ -130,25 +141,11 @@ local function startSocketServer()
                                     return false
                                 end
 
-                                -- Fire-and-forget async task for HTTP POST
-                                -- This allows send() to return immediately even when
-                                -- called from inside withReadAccessDo
-                                LrTasks.startAsyncTask(function()
-                                    local LrHttp = import 'LrHttp'
-                                    local url = "http://localhost:54400/response"
-                                    local headers = {
-                                        { field = "Content-Type", value = "application/json" }
-                                    }
-                                    local body, respHeaders = LrHttp.post(url, jsonData, headers, "POST", 5)
-
-                                    if body then
-                                        logger:debug("HTTP response sent successfully")
-                                    else
-                                        logger:error("HTTP response send failed")
-                                    end
-                                end)
-
-                                return true  -- Return immediately
+                                -- Queue for the main loop to send via HTTP
+                                debugLog("QUEUE PUSH: " .. string.len(jsonData) .. " bytes, queue size=" .. (#responseQueue + 1))
+                                debugLog("CONTENT: " .. jsonData:sub(1, 500))
+                                table.insert(responseQueue, jsonData)
+                                return true
                             end
                         })
 
@@ -160,7 +157,7 @@ local function startSocketServer()
                 end,
 
                 onMessage = function(socket, message)
-                    logger:info("Message received: " .. tostring(message):sub(1, 200))
+                    debugLog("onMessage: " .. tostring(message):sub(1, 200))
 
                     -- Store socket ref for responses (may update on reconnect)
                     responseSocket = socket
@@ -169,11 +166,13 @@ local function startSocketServer()
                     if MessageProtocol and commandRouter then
                         local decoded = MessageProtocol:decode(tostring(message))
                         if decoded then
-                            logger:info("Dispatching command: " .. (decoded.command or "unknown"))
+                            debugLog("Dispatching: " .. (decoded.command or "unknown") .. " id=" .. tostring(decoded.id):sub(1, 8))
                             commandRouter:dispatch(decoded)
                         else
-                            logger:error("Failed to decode message: " .. tostring(message):sub(1, 100))
+                            debugLog("DECODE FAILED: " .. tostring(message):sub(1, 100))
                         end
+                    else
+                        debugLog("NO ROUTER OR PROTOCOL")
                     end
                 end,
 
@@ -201,8 +200,33 @@ local function startSocketServer()
 
             _G.LightroomPythonBridge.socketServerRunning = true
 
+            local LrHttp = import 'LrHttp'
+            local httpUrl = "http://localhost:54400/response"
+            local httpHeaders = {
+                { field = "Content-Type", value = "application/json" }
+            }
+
+            debugLog("Main loop starting")
+
             while _G.LightroomPythonBridge.socketServerRunning do
-                LrTasks.sleep(0.2)
+                -- Drain the response queue via HTTP POST
+                while #responseQueue > 0 do
+                    local jsonData = table.remove(responseQueue, 1)
+                    debugLog("QUEUE DRAIN: sending " .. string.len(jsonData) .. " bytes via HTTP")
+                    local sendSuccess, sendErr = LrTasks.pcall(function()
+                        local body = LrHttp.post(httpUrl, jsonData, httpHeaders, "POST", 5)
+                        if body then
+                            debugLog("HTTP POST success")
+                        else
+                            debugLog("HTTP POST failed (no body)")
+                        end
+                    end)
+                    if not sendSuccess then
+                        debugLog("HTTP POST error: " .. tostring(sendErr))
+                    end
+                end
+
+                LrTasks.sleep(0.05)  -- 50ms — fast response drain
             end
 
             logger:info("Socket server loop ended - cleaning up")

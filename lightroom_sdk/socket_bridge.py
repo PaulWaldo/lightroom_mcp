@@ -143,10 +143,18 @@ class SocketBridge:
 
                 # Dispatch response to the asyncio event loop (thread-safe)
                 try:
-                    message = json.loads(body.decode('utf-8'))
+                    raw = body.decode('utf-8')
+                    # Write to debug log (readable by Claude)
+                    with open(str(Path.home() / 'lightroom_python_debug.log'), 'a') as dbg:
+                        dbg.write(f"HTTP RECV ({len(raw)} bytes): {raw[:300]}\n")
+                    message = json.loads(raw)
                     bridge._dispatch_message(message)
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Invalid JSON in HTTP callback: {e}")
+                    with open(str(Path.home() / 'lightroom_python_debug.log'), 'a') as dbg:
+                        dbg.write(f"JSON ERROR: {e}\nRAW: {body[:200]}\n")
+                except Exception as e:
+                    with open(str(Path.home() / 'lightroom_python_debug.log'), 'a') as dbg:
+                        dbg.write(f"DISPATCH ERROR: {e}\n")
 
             def log_message(self, format, *args):
                 pass  # Suppress HTTP server logs
@@ -164,18 +172,26 @@ class SocketBridge:
 
         # Handle events (just log, no future to resolve)
         if 'event' in message:
-            logger.debug(f"Event received: {message['event']}")
+            logger.info(f"Event received: {message['event']}")
             return
 
         # Handle responses — match by request ID and resolve the future
         request_id = message.get('id')
+        logger.info(f"HTTP callback received id={request_id}, pending={list(self._pending_requests.keys())}")
+
         if request_id and request_id in self._pending_requests:
             future = self._pending_requests.pop(request_id)
             if not future.cancelled():
-                # Thread-safe: schedule set_result on the event loop
-                self._loop.call_soon_threadsafe(future.set_result, message)
+                logger.info(f"Resolving future for {request_id}")
+                try:
+                    self._loop.call_soon_threadsafe(future.set_result, message)
+                    logger.info(f"call_soon_threadsafe succeeded for {request_id}")
+                except Exception as e:
+                    logger.error(f"call_soon_threadsafe failed: {e}")
+            else:
+                logger.warning(f"Future already cancelled for {request_id}")
         else:
-            logger.debug(f"No pending request for id: {request_id}")
+            logger.warning(f"No pending request for id: {request_id}")
 
     async def send_command(
         self,

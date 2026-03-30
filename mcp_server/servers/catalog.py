@@ -314,29 +314,33 @@ class CatalogServer(LightroomServerModule):
 
         @self.server.tool
         async def catalog_get_keyword_photos(
-            keyword_name: str,
-            match_mode: str = "exact",
+            keyword_id: Optional[int] = None,
+            keyword_name: Optional[str] = None,
             limit: int = 100,
             offset: int = 0
         ) -> Dict[str, Any]:
             """
             Find all photos that have a specific keyword assigned.
+            Use keyword_id for fast lookup (get IDs from catalog_get_keywords).
 
             Args:
-                keyword_name: Keyword to search for
-                match_mode: How to match — "exact", "startsWith", or "contains"
+                keyword_id: Keyword ID (fast — direct lookup)
+                keyword_name: Keyword name (slower — scans all keywords)
                 limit: Max photos to return (default 100)
                 offset: Starting position for pagination
 
             Returns:
                 Photos with the keyword, pagination info
             """
-            result = await self.execute_command("getKeywordPhotos", {
-                "keywordName": keyword_name,
-                "matchMode": match_mode,
-                "limit": limit,
-                "offset": offset
-            })
+            params = {"limit": limit, "offset": offset}
+            if keyword_id is not None:
+                params["keywordId"] = keyword_id
+            elif keyword_name is not None:
+                params["keywordName"] = keyword_name
+            else:
+                return {"success": False, "error": "keyword_id or keyword_name required"}
+
+            result = await self.execute_command("getKeywordPhotos", params)
 
             return {
                 "success": True,
@@ -378,6 +382,52 @@ class CatalogServer(LightroomServerModule):
                 "photo_id": str(photo_id),
                 "field": field,
                 "value": value
+            }
+
+        @self.server.tool
+        async def catalog_batch_set_metadata_by_keyword(
+            field: str,
+            value: str,
+            keyword_id: Optional[int] = None,
+            keyword_name: Optional[str] = None,
+            dry_run: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Batch set a metadata field on all photos with a specific keyword.
+            Skips photos that already have the correct value.
+            Dry run by default — shows what would change without changing it.
+
+            Args:
+                field: Metadata field (artist, caption, copyright, title, etc.)
+                value: Value to set
+                keyword_id: Keyword ID (fast lookup)
+                keyword_name: Keyword name (slower, scans catalog)
+                dry_run: If True, report what would change without changing (default True)
+
+            Returns:
+                Count of stamped, skipped, and total photos
+            """
+            params = {"field": field, "value": value, "dryRun": dry_run}
+            if keyword_id is not None:
+                params["keywordId"] = keyword_id
+            elif keyword_name is not None:
+                params["keywordName"] = keyword_name
+            else:
+                return {"success": False, "error": "keyword_id or keyword_name required"}
+
+            result = await self.execute_command("batchSetMetadataByKeyword", params)
+
+            return {
+                "success": True,
+                "field": field,
+                "value": value,
+                "keyword": result.get("keywordName", ""),
+                "stamped": result.get("stamped", 0),
+                "would_stamp": result.get("wouldStamp", 0),
+                "skipped": result.get("skipped", 0),
+                "errors": result.get("errors", 0),
+                "total": result.get("total", 0),
+                "dry_run": dry_run
             }
 
         @self.server.tool

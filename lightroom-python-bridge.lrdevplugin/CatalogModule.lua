@@ -690,83 +690,219 @@ function CatalogModule.addPhotoKeywords(params, callback)
     end)
 end
 
--- Get photos that have a specific keyword (by name, supports partial match)
+-- Get photos that have a specific keyword (by ID for speed, or name as fallback)
 function CatalogModule.getKeywordPhotos(params, callback)
     ensureLrModules()
     local logger = getLogger()
 
+    local keywordId = params and tonumber(params.keywordId)
     local keywordName = params and params.keywordName
-    local matchMode = (params and params.matchMode) or "exact"  -- exact, startsWith, contains
     local limit = (params and params.limit) or 100
     local offset = (params and params.offset) or 0
 
-    if not keywordName then
-        callback({ error = { code = "MISSING_PARAM", message = "keywordName is required" } })
+    if not keywordId and not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordId or keywordName is required" } })
         return
     end
-
-    logger:info("Finding photos with keyword '" .. keywordName .. "' (mode=" .. matchMode .. ")")
 
     local catalog = LrApplication.activeCatalog()
 
     catalog:withReadAccessDo(function()
-        local allKeywords = catalog:getKeywords()
-        local matchedPhotos = {}
-        local seenIds = {}
-        local matchedKeywordCount = 0
+        local targetKeyword = nil
 
-        -- Find matching keywords
-        for _, keyword in ipairs(allKeywords) do
-            local name = keyword:getName()
-            local isMatch = false
-
-            if matchMode == "exact" and name == keywordName then
-                isMatch = true
-            elseif matchMode == "startsWith" and name:sub(1, #keywordName) == keywordName then
-                isMatch = true
-            elseif matchMode == "contains" and name:find(keywordName, 1, true) then
-                isMatch = true
+        if keywordId then
+            -- Fast path: direct lookup by ID
+            logger:info("Finding keyword by ID: " .. keywordId)
+            local allKeywords = catalog:getKeywords()
+            for _, kw in ipairs(allKeywords) do
+                if kw.localIdentifier == keywordId then
+                    targetKeyword = kw
+                    break
+                end
             end
-
-            if isMatch then
-                matchedKeywordCount = matchedKeywordCount + 1
-                local photos = keyword:getPhotos()
-                for _, photo in ipairs(photos) do
-                    local id = photo.localIdentifier
-                    if not seenIds[id] then
-                        seenIds[id] = true
-                        table.insert(matchedPhotos, {
-                            id = id,
-                            filename = photo:getFormattedMetadata("fileName"),
-                            path = photo:getRawMetadata("path")
-                        })
-                    end
+        else
+            -- Slow path: scan by name (exact match only)
+            logger:info("Finding keyword by name: " .. keywordName)
+            local allKeywords = catalog:getKeywords()
+            for _, kw in ipairs(allKeywords) do
+                if kw:getName() == keywordName then
+                    targetKeyword = kw
+                    break  -- exact match found, stop scanning
                 end
             end
         end
 
+        if not targetKeyword then
+            callback({
+                result = {
+                    photos = {},
+                    count = 0,
+                    total = 0,
+                    keywordFound = false
+                }
+            })
+            return
+        end
+
+        logger:info("Found keyword: " .. targetKeyword:getName() .. " (id=" .. targetKeyword.localIdentifier .. ")")
+
+        local allPhotos = targetKeyword:getPhotos()
+        local total = #allPhotos
+
+        logger:info("Keyword has " .. total .. " photos")
+
         -- Apply pagination
-        local total = #matchedPhotos
         local resultPhotos = {}
         local endIdx = math.min(offset + limit, total)
         for i = offset + 1, endIdx do
-            table.insert(resultPhotos, matchedPhotos[i])
+            local photo = allPhotos[i]
+            table.insert(resultPhotos, {
+                id = photo.localIdentifier,
+                filename = photo:getFormattedMetadata("fileName"),
+                path = photo:getRawMetadata("path")
+            })
         end
-
-        logger:info("Found " .. total .. " photos across " .. matchedKeywordCount .. " matching keywords")
 
         callback({
             result = {
                 photos = resultPhotos,
                 count = #resultPhotos,
                 total = total,
-                matchedKeywords = matchedKeywordCount,
+                keywordFound = true,
+                keywordName = targetKeyword:getName(),
+                keywordId = targetKeyword.localIdentifier,
                 offset = offset,
                 limit = limit,
                 hasMore = (offset + limit) < total
             }
         })
     end)
+end
+
+-- Batch set metadata on all photos with a specific keyword (skip if already set)
+function CatalogModule.batchSetMetadataByKeyword(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordId = params and tonumber(params.keywordId)
+    local keywordName = params and params.keywordName
+    local field = params and params.field
+    local value = params and params.value
+    local dryRun = (params and params.dryRun) or false
+
+    if not keywordId and not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordId or keywordName is required" } })
+        return
+    end
+    if not field or not value then
+        callback({ error = { code = "MISSING_PARAM", message = "field and value are required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+
+    -- First pass: find keyword and count photos (read access)
+    local targetKeyword = nil
+    local photoList = {}
+
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+
+        if keywordId then
+            for _, kw in ipairs(allKeywords) do
+                if kw.localIdentifier == keywordId then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        else
+            for _, kw in ipairs(allKeywords) do
+                if kw:getName() == keywordName then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        end
+
+        if targetKeyword then
+            photoList = targetKeyword:getPhotos()
+        end
+    end)
+
+    if not targetKeyword then
+        callback({ result = { stamped = 0, skipped = 0, total = 0, keywordFound = false } })
+        return
+    end
+
+    local total = #photoList
+    logger:info("Batch set " .. field .. " = '" .. value .. "' on " .. total .. " photos (keyword: " .. targetKeyword:getName() .. ", dryRun=" .. tostring(dryRun) .. ")")
+
+    if dryRun then
+        -- Dry run: just count how many need updating
+        local needsUpdate = 0
+        local alreadySet = 0
+
+        catalog:withReadAccessDo(function()
+            for _, photo in ipairs(photoList) do
+                local current = photo:getFormattedMetadata(field) or ""
+                if current == value then
+                    alreadySet = alreadySet + 1
+                else
+                    needsUpdate = needsUpdate + 1
+                end
+            end
+        end)
+
+        callback({
+            result = {
+                stamped = 0,
+                wouldStamp = needsUpdate,
+                skipped = alreadySet,
+                total = total,
+                keywordFound = true,
+                keywordName = targetKeyword:getName(),
+                dryRun = true
+            }
+        })
+        return
+    end
+
+    -- Execute: stamp photos that need it
+    local stamped = 0
+    local skipped = 0
+    local errors = 0
+
+    catalog:withWriteAccessDo("Batch Set " .. field, function()
+        for _, photo in ipairs(photoList) do
+            local success, err = LrTasks.pcall(function()
+                local current = photo:getFormattedMetadata(field) or ""
+                if current == value then
+                    skipped = skipped + 1
+                else
+                    photo:setRawMetadata(field, value)
+                    stamped = stamped + 1
+                end
+            end)
+            if not success then
+                errors = errors + 1
+                logger:error("Failed to set metadata on photo: " .. tostring(err))
+            end
+        end
+    end)
+
+    logger:info("Batch complete: " .. stamped .. " stamped, " .. skipped .. " skipped, " .. errors .. " errors")
+
+    callback({
+        result = {
+            stamped = stamped,
+            skipped = skipped,
+            errors = errors,
+            total = total,
+            keywordFound = true,
+            keywordName = targetKeyword:getName(),
+            dryRun = false
+        }
+    })
 end
 
 -- Set metadata field on a photo (Artist, Caption, etc.)

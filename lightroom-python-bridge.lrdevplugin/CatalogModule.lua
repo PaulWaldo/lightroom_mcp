@@ -969,6 +969,218 @@ function CatalogModule.setPhotoMetadata(params, callback)
     end)
 end
 
+-- Remove keywords from a photo
+function CatalogModule.removePhotoKeywords(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local photoId = params and tonumber(params.photoId)
+    local keywords = params and params.keywords
+
+    if not photoId then
+        callback({ error = { code = "MISSING_PARAM", message = "photoId is required" } })
+        return
+    end
+    if not keywords or type(keywords) ~= "table" or #keywords == 0 then
+        callback({ error = { code = "MISSING_PARAM", message = "keywords array is required" } })
+        return
+    end
+
+    logger:info("Removing " .. #keywords .. " keywords from photo " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withWriteAccessDo("Remove Keywords", function()
+        local photo = catalog:getPhotoByLocalId(photoId)
+        if not photo then
+            callback({ error = { code = "PHOTO_NOT_FOUND", message = "Photo not found: " .. photoId } })
+            return
+        end
+
+        local removed = {}
+        local photoKeywords = photo:getRawMetadata("keywords") or {}
+
+        for _, keywordName in ipairs(keywords) do
+            for _, kw in ipairs(photoKeywords) do
+                if kw:getName() == keywordName then
+                    photo:removeKeyword(kw)
+                    table.insert(removed, keywordName)
+                    break
+                end
+            end
+        end
+
+        logger:info("Removed " .. #removed .. " keywords from photo " .. photoId)
+
+        callback({
+            result = {
+                photoId = photoId,
+                keywordsRemoved = removed,
+                count = #removed
+            }
+        })
+    end)
+end
+
+-- Delete a keyword from the catalog entirely (removes from all photos)
+function CatalogModule.deleteKeyword(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordId = params and tonumber(params.keywordId)
+    local keywordName = params and params.keywordName
+    local dryRun = (params and params.dryRun) or false
+
+    if not keywordId and not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordId or keywordName is required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local targetKeyword = nil
+    local photoCount = 0
+
+    -- Find the keyword (read access)
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+        if keywordId then
+            for _, kw in ipairs(allKeywords) do
+                if kw.localIdentifier == keywordId then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        else
+            for _, kw in ipairs(allKeywords) do
+                if kw:getName() == keywordName then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        end
+
+        if targetKeyword then
+            photoCount = #targetKeyword:getPhotos()
+        end
+    end)
+
+    if not targetKeyword then
+        callback({ result = { deleted = false, message = "Keyword not found" } })
+        return
+    end
+
+    local kwName = targetKeyword:getName()
+    logger:info("Delete keyword: " .. kwName .. " (id=" .. targetKeyword.localIdentifier .. ", photos=" .. photoCount .. ", dryRun=" .. tostring(dryRun) .. ")")
+
+    if dryRun then
+        callback({
+            result = {
+                deleted = false,
+                dryRun = true,
+                keywordName = kwName,
+                keywordId = targetKeyword.localIdentifier,
+                photoCount = photoCount,
+                message = "Would delete keyword '" .. kwName .. "' affecting " .. photoCount .. " photos"
+            }
+        })
+        return
+    end
+
+    -- Delete (write access)
+    catalog:withWriteAccessDo("Delete Keyword", function()
+        catalog:deleteKeyword(targetKeyword)
+        logger:info("Deleted keyword: " .. kwName)
+
+        callback({
+            result = {
+                deleted = true,
+                keywordName = kwName,
+                keywordId = targetKeyword.localIdentifier,
+                photoCount = photoCount
+            }
+        })
+    end)
+end
+
+-- Batch delete keywords by pattern (for cleanup passes)
+function CatalogModule.batchDeleteKeywords(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordIds = params and params.keywordIds
+    local dryRun = (params and params.dryRun) or false
+
+    if not keywordIds or type(keywordIds) ~= "table" or #keywordIds == 0 then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordIds array is required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+
+    -- Find all keywords by ID (read access)
+    local toDelete = {}
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+        local idSet = {}
+        for _, id in ipairs(keywordIds) do
+            idSet[tonumber(id)] = true
+        end
+        for _, kw in ipairs(allKeywords) do
+            if idSet[kw.localIdentifier] then
+                table.insert(toDelete, {
+                    keyword = kw,
+                    name = kw:getName(),
+                    id = kw.localIdentifier
+                })
+            end
+        end
+    end)
+
+    logger:info("Batch delete: " .. #toDelete .. " of " .. #keywordIds .. " keywords found (dryRun=" .. tostring(dryRun) .. ")")
+
+    if dryRun then
+        local names = {}
+        for _, kw in ipairs(toDelete) do
+            table.insert(names, kw.name)
+        end
+        callback({
+            result = {
+                deleted = 0,
+                dryRun = true,
+                found = #toDelete,
+                requested = #keywordIds,
+                keywords = names
+            }
+        })
+        return
+    end
+
+    -- Delete in one write access call
+    local deleted = 0
+    catalog:withWriteAccessDo("Batch Delete Keywords", function()
+        for _, kw in ipairs(toDelete) do
+            local success, err = LrTasks.pcall(function()
+                catalog:deleteKeyword(kw.keyword)
+            end)
+            if success then
+                deleted = deleted + 1
+            else
+                logger:error("Failed to delete keyword: " .. kw.name .. " — " .. tostring(err))
+            end
+        end
+    end)
+
+    logger:info("Batch deleted: " .. deleted .. " keywords")
+
+    callback({
+        result = {
+            deleted = deleted,
+            requested = #keywordIds,
+            found = #toDelete
+        }
+    })
+end
+
 -- Get keywords in catalog (with pagination and optional photo counts)
 function CatalogModule.getKeywords(params, callback)
     ensureLrModules()

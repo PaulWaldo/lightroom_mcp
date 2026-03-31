@@ -430,6 +430,57 @@ class CatalogServer(LightroomServerModule):
             }
 
         @self.server.tool
+        async def catalog_delete_keyword(
+            keyword_id: Optional[int] = None,
+            keyword_name: Optional[str] = None,
+            dry_run: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Delete a keyword from the catalog entirely.
+            Removes it from all photos. Dry run by default.
+
+            Args:
+                keyword_id: Keyword ID (fast lookup)
+                keyword_name: Keyword name (slower)
+                dry_run: If True, report what would happen (default True)
+
+            Returns:
+                Deletion result with photo count affected
+            """
+            params = {"dryRun": dry_run}
+            if keyword_id is not None:
+                params["keywordId"] = keyword_id
+            elif keyword_name is not None:
+                params["keywordName"] = keyword_name
+            else:
+                return {"success": False, "error": "keyword_id or keyword_name required"}
+
+            result = await self.execute_command("deleteKeyword", params)
+            return {"success": True, **result}
+
+        @self.server.tool
+        async def catalog_batch_delete_keywords(
+            keyword_ids: List[int],
+            dry_run: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Batch delete keywords from the catalog by ID.
+            Dry run by default. Use for cleanup passes.
+
+            Args:
+                keyword_ids: List of keyword IDs to delete
+                dry_run: If True, report what would happen (default True)
+
+            Returns:
+                Count of deleted keywords
+            """
+            result = await self.execute_command("batchDeleteKeywords", {
+                "keywordIds": keyword_ids,
+                "dryRun": dry_run
+            })
+            return {"success": True, "dry_run": dry_run, **result}
+
+        @self.server.tool
         async def catalog_get_photo_info(
             photo_id: Union[str, int]
         ) -> Dict[str, Any]:

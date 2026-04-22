@@ -278,7 +278,7 @@ asyncio.run(test())
 
 ### Lightroom Plugin Testing
 1. Check plugin logs:
-   - **Mac**: `~/Logs/Adobe/Lightroom/LrClassicLogs/LightroomPythonBridge.log`
+   - **Mac**: `~/Library/Logs/Adobe/Lightroom/LrClassicLogs/LightroomPythonBridge.log`
    - **Windows**: `%USERPROFILE%\Logs\Adobe\Lightroom\LrClassicLogs\LightroomPythonBridge.log`
 
 2. Add debug logging in Lua:

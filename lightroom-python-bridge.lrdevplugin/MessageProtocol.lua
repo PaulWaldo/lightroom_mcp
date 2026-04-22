@@ -74,8 +74,8 @@ function MessageProtocol:_encodeJSON(obj)
     local t = type(obj)
     
     if t == "string" then
-        -- Escape special characters
-        local escaped = obj:gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r')
+        -- Escape special characters (backslash MUST be first)
+        local escaped = obj:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r')
         return '"' .. escaped .. '"'
     elseif t == "number" then
         return tostring(obj)

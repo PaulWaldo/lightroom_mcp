@@ -2,16 +2,48 @@
 
 ## Current Work Focus
 
-The Lightroom Classic MCP Server is **operational and feature-complete** with 66+ MCP tools covering all major Lightroom catalog and develop operations. Current focus areas include:
+The Lightroom Classic MCP Server is **operational and feature-complete** with 75+ MCP tools covering all major Lightroom catalog and develop operations. Current focus areas include:
 
-1. **Memory Bank Initialization** - Documenting project context for AI assistants
-2. **Stability & Error Handling** - Ensuring robust operation with comprehensive error messages
-3. **Performance Optimization** - Batch operations, chunked transfers, connection resilience
-4. **Documentation** - Maintaining clear API references and usage examples
+1. **Architecture Stability** - New single-socket + HTTP callback architecture (merged from kmanley1/windows-compat)
+2. **Catalog Enhancements** - New keyword and metadata batch tools added
+3. **Documentation** - Maintaining clear API references and usage examples
+4. **Windows Compatibility** - MessageProtocol backslash escaping fix applied
 
 ## Recent Changes & Implementations
 
-### Latest (February 2026) - Plugin Metadata Discovery
+### April 2026 - Socket Architecture Fix (kmanley1 contribution)
+
+**Critical bug fixed**: The original dual-socket architecture had a fatal flaw — Lightroom's `LrSocket` in `mode="send"` has a **10-second idle timeout**. After Lightroom sent the `connection.established` event, the sender socket would go idle and Lightroom would close it. Python's `_receive_loop` would get EOF and set `_connected = False`. Commands were still sent (write socket stayed alive) but responses never arrived, causing 30-second timeouts on every call.
+
+**Credit**: Fix implemented by **[kmanley1](https://github.com/Kmanley1/lightroom_mcp)** in his `windows-compat` branch (PR #9 on upstream). Merged into our `main` branch April 2026.
+
+**New Architecture**:
+- **OLD (broken)**: Dual TCP sockets — Python reads responses from LrSocket `mode="send"` (idle timeout kills it)
+- **NEW (working)**: Single `mode="receive"` TCP socket for commands (Python → Lightroom) + HTTP POST callbacks on port 54400 for responses (Lightroom → Python). Python runs a tiny HTTP server. LrHttp.post() is wrapped in async LrTasks to avoid blocking catalog handlers.
+
+**Port file location change**: OLD used `/tmp/lightroom_ports.txt`, NEW uses `~/lightroom_ports.txt` (home dir via `LrPathUtils.getStandardFilePath("home")`).
+
+**Files changed in merge**:
+- `SimpleSocketBridge.lua` — New single-socket + HTTP callback architecture
+- `socket_bridge.py` — HTTP server on port 54400 to receive LR responses; `loop.call_soon_threadsafe` for thread safety
+- `client.py` — Updated for new architecture
+- `CatalogModule.lua` — Added 6 new handlers (see below); restored our robust `addPhotoKeywords`
+- `catalog.py` — Clean merge: our plugin metadata tools + kmanley1's new tools
+- `MessageProtocol.lua` — Backslash escaping fix for Windows file paths
+- `Logger.lua` — Removed rogue WTF logger
+- `PluginInit.lua` — Updated initialization
+
+### New Catalog Tools from kmanley1 (April 2026)
+- ✅ `catalog_get_keyword_photos` — Find all photos with a specific keyword (by ID or name)
+- ✅ `catalog_set_photo_metadata` — Set writable metadata fields (artist, caption, copyright, etc.)
+- ✅ `catalog_batch_set_metadata_by_keyword` — Stamp metadata on all photos with a keyword (dry-run support)
+- ✅ `catalog_delete_keyword` — Delete a keyword from the catalog entirely (dry-run support)
+- ✅ `catalog_batch_delete_keywords` — Batch delete keywords by ID list (dry-run support)
+- ✅ `catalog_add_keywords` — Restored with our robust version (ErrorUtils wrapping, deduplication tracking)
+
+Also added pagination to `catalog_get_keywords` (limit/offset/include_counts params).
+
+### February 2026 - Plugin Metadata Discovery
 - ✅ **Fixed empty metadata bug**: Added discovery tool and enhanced error messages
 - ✅ `catalog_discover_plugin_metadata` - NEW! Automatically discovers all plugins and their fields for a photo
 - ✅ Enhanced `catalog_get_plugin_metadata` with helpful warnings when metadata is empty
@@ -19,7 +51,7 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 66
 - ✅ LLMs can now self-discover correct plugin IDs and field names dynamically
 - ✅ Solution works with ANY plugin installation, completely user-agnostic
 
-### Previous (January 2026) - Plugin Metadata Access
+### January 2026 - Plugin Metadata Access
 - ✅ Implemented four plugin metadata tools for accessing third-party plugin data
 - ✅ `catalog_get_plugin_metadata` - Get metadata from a single photo
 - ✅ `catalog_batch_get_plugin_metadata` - Efficiently query multiple photos (10-20x faster)
@@ -31,14 +63,14 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 66
 ### Core Infrastructure
 - ✅ Modular FastMCP server architecture with 5 main servers
 - ✅ ResilientClientManager with auto-reconnection (3 retries)
-- ✅ Dual socket bridge (workaround for LrSocket limitations)
+- ✅ Single-socket + HTTP callback bridge (replaces broken dual-socket)
 - ✅ Chunked transfer protocol for large data (>10MB)
 - ✅ Structured exception hierarchy with ERROR_CODE_MAP
 - ✅ Comprehensive error middleware
 
 ### MCP Tools Implemented
 - ✅ **System** (4 tools): ping, status, reconnect, check_photo_selected
-- ✅ **Catalog** (15 tools): Search, metadata, collections, folders, keywords, selection control, plugin metadata (4 tools including discovery)
+- ✅ **Catalog** (21 tools): Search, metadata, collections, folders, keywords, selection control, plugin metadata (4 tools including discovery), new keyword/metadata batch tools
 - ✅ **Develop** (49 tools):
   - Basic adjustments (exposure, contrast, highlights, shadows, whites, blacks)
   - Advanced controls (clarity, vibrance, saturation, texture, dehaze)
@@ -117,11 +149,12 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 66
 - **Trade-off**: Slightly more complex composition layer
 - **Status**: Working well, no plans to change
 
-**2. Dual Socket Pattern**
-- **Decision**: Use two TCP sockets for bidirectional communication
-- **Rationale**: LrSocket limitation requires this approach
-- **Trade-off**: More complex socket management
-- **Status**: Stable, no issues reported
+**2. Single Socket + HTTP Callback Pattern**
+- **Decision**: Replace broken dual-socket with single receive socket + HTTP POST callbacks
+- **Rationale**: LrSocket `mode="send"` has 10-second idle timeout that kills the receive channel
+- **Credit**: kmanley1's windows-compat branch (PR #9)
+- **Trade-off**: Python must run HTTP server on port 54400
+- **Status**: Working reliably, stable connection confirmed
 
 **3. Photo Selection Requirement**
 - **Decision**: Never auto-select photos, require explicit selection
@@ -244,13 +277,14 @@ end
 5. **Comprehensive Documentation**: README + CLAUDE.md + API docs cover all needs
 
 ### Challenges Overcome
-1. **LrSocket Limitations**: Solved with dual socket pattern
+1. **LrSocket Idle Timeout (Critical)**: `mode="send"` times out after 10s idle → solved by kmanley1's single-socket + HTTP callback architecture
 2. **Module Caching**: Documented need to restart Lightroom
 3. **Catalog Access**: Strict adherence to withReadAccessDo/withWriteAccessDo pattern
 4. **Large Preview Files**: Implemented chunked transfer protocol
 5. **Temperature/Tint**: Special handling for compatibility
 6. **Plugin Metadata Batch API**: Implemented fallback when batchGetPropertyForPlugin returns nil
 7. **Plugin Property Search**: Corrected API signature to use 2-3 params (not 4) for findPhotosWithProperty
+8. **Windows Path Encoding**: Backslash escaping in MessageProtocol (kmanley1 fix)
 
 ### Lessons Learned
 1. **Lightroom Constraints**: Work with them, not against them
@@ -260,6 +294,7 @@ end
 5. **Resilience Required**: Network issues are common, handle gracefully
 6. **Use SDK Introspection**: `getRawMetadata("customMetadata")` reveals all plugin metadata without hardcoding
 7. **Never Assume Plugin Installations**: Each user has different plugins, discover dynamically
+8. **LrSocket `mode="send"` has idle timeout**: Never use for persistent receive channel — use LrHttp.post() callbacks instead
 
 ### Best Practices Established
 1. Always validate parameters before sending to Lightroom
@@ -281,10 +316,10 @@ end
 3. **Module Caching**: Lightroom restart needed to reload plugin code
 4. **Temperature/Tint**: Cannot be set in batch operations
 5. **Lua 5.1**: Older Lua version limits some modern features
-6. **Socket Ports**: Fixed ports 53100/53101 (no dynamic allocation)
+6. **HTTP Callback Port**: Port 54400 must be free for response callbacks
 
 ### Workarounds in Place
-1. **LrSocket**: Dual socket pattern
+1. **LrSocket Idle Timeout**: Single-socket + HTTP callback (kmanley1's fix)
 2. **Preview Size**: PIL resizing after generation
 3. **Large Transfers**: Chunked transfer protocol
 4. **Connection Loss**: Auto-reconnection with retries
@@ -294,8 +329,9 @@ end
 
 ### External Dependencies
 - **Lightroom Classic**: Must be running with plugin loaded
-- **Python Packages**: fastmcp, Pillow, NumPy
-- **TCP Ports**: 53100 (send), 53101 (receive)
+- **Python Packages**: fastmcp, Pillow, NumPy, httpx
+- **TCP Port**: 53101 (command socket, receive mode)
+- **HTTP Port**: 54400 (response callbacks from Lightroom)
 
 ### Integration Surfaces
 - **MCP Protocol**: Standard interface for AI agents
@@ -310,6 +346,6 @@ end
 **Documentation**: ✅ Comprehensive
 **Performance**: ✅ Optimized with batch operations
 **Error Handling**: ✅ Robust with clear messages
-**Stability**: ✅ Auto-reconnection, resilient design
+**Stability**: ✅ Stable (new architecture eliminates idle timeout bug)
 
 **Ready for**: Production use by early adopters, feedback collection, feature requests

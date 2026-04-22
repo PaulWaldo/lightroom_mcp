@@ -435,12 +435,9 @@ function CatalogModule.setSelectedPhotos(params, callback)
     end)
 
     if writeSuccess then
-        -- writeError contains the result data when successful, but may be nil
-        local resultData = writeError or {}
-        local selectedCount = resultData.selected or 0
-        logger:info("Successfully set selection to " .. selectedCount .. " photos")
+        logger:info("Successfully set selection to " .. writeError.selected .. " photos")  -- writeError contains results when successful
         callback({
-            result = resultData
+            result = writeError  -- writeError is actually the success result
         })
     else
         logger:error("Failed to set photo selection (write access): " .. tostring(writeError))
@@ -640,100 +637,6 @@ function CatalogModule.getCollections(params, callback)
     end)
 end
 
--- Get keywords in catalog
-function CatalogModule.getKeywords(params, callback)
-    ensureLrModules()
-    local logger = getLogger()
-
-    logger:debug("Getting keywords from catalog")
-
-    local catalog = LrApplication.activeCatalog()
-
-    catalog:withReadAccessDo(function()
-        local keywords = catalog:getKeywords()
-
-        local resultKeywords = {}
-        for _, keyword in ipairs(keywords) do
-            table.insert(resultKeywords, {
-                id = keyword.localIdentifier,
-                name = keyword:getName(),
-                photoCount = #keyword:getPhotos()
-            })
-        end
-
-        callback({
-            result = {
-                keywords = resultKeywords,
-                count = #resultKeywords
-            }
-        })
-    end)
-end
-
--- Get folders in catalog
-function CatalogModule.getFolders(params, callback)
-    ensureLrModules()
-    local logger = getLogger()
-    local includeSubfolders = params.includeSubfolders or false
-
-    logger:debug("Getting folders from catalog")
-
-    local catalog = LrApplication.activeCatalog()
-
-    catalog:withReadAccessDo(function()
-        local rootFolders = catalog:getFolders()
-
-        local function buildFolderTree(folder, depth)
-            depth = depth or 0
-            local folderPath = folder:getPath()
-            local folderData = {
-                id = folderPath, -- Use path as ID since folders don't have localIdentifier
-                name = folder:getName(),
-                path = folderPath,
-                type = folder:type(),
-                depth = depth,
-                photoCount = #folder:getPhotos(false), -- Photos directly in this folder
-                totalPhotoCount = #folder:getPhotos(true), -- Photos including subfolders
-                subfolders = {}
-            }
-
-            -- Get parent folder info if available
-            local parent = folder:getParent()
-            if parent then
-                folderData.parentId = parent:getPath()
-                folderData.parentName = parent:getName()
-            end
-
-            -- Recursively get subfolders if requested
-            if includeSubfolders then
-                local children = folder:getChildren()
-                if children then
-                    for _, child in ipairs(children) do
-                        table.insert(folderData.subfolders, buildFolderTree(child, depth + 1))
-                    end
-                end
-            end
-
-            return folderData
-        end
-
-        local resultFolders = {}
-        for _, folder in ipairs(rootFolders) do
-            table.insert(resultFolders, buildFolderTree(folder))
-        end
-
-        logger:info("Retrieved " .. #resultFolders .. " root folders from catalog")
-
-        callback({
-            result = {
-                folders = resultFolders,
-                count = #resultFolders,
-                includeSubfolders = includeSubfolders
-            }
-        })
-    end)
-end
-
 -- Add keywords to a photo
 function CatalogModule.addPhotoKeywords(params, callback)
     local wrappedCallback = ErrorUtils.wrapCallback(callback, "addPhotoKeywords")
@@ -830,6 +733,605 @@ function CatalogModule.addPhotoKeywords(params, callback)
         wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.OPERATION_FAILED,
             "Failed to add keywords: " .. tostring(writeError)))
     end
+end
+
+-- Get photos that have a specific keyword (by ID for speed, or name as fallback)
+function CatalogModule.getKeywordPhotos(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordId = params and tonumber(params.keywordId)
+    local keywordName = params and params.keywordName
+    local limit = (params and params.limit) or 100
+    local offset = (params and params.offset) or 0
+
+    if not keywordId and not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordId or keywordName is required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withReadAccessDo(function()
+        local targetKeyword = nil
+
+        if keywordId then
+            -- Fast path: direct lookup by ID
+            logger:info("Finding keyword by ID: " .. keywordId)
+            local allKeywords = catalog:getKeywords()
+            for _, kw in ipairs(allKeywords) do
+                if kw.localIdentifier == keywordId then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        else
+            -- Slow path: scan by name (exact match only)
+            logger:info("Finding keyword by name: " .. keywordName)
+            local allKeywords = catalog:getKeywords()
+            for _, kw in ipairs(allKeywords) do
+                if kw:getName() == keywordName then
+                    targetKeyword = kw
+                    break  -- exact match found, stop scanning
+                end
+            end
+        end
+
+        if not targetKeyword then
+            callback({
+                result = {
+                    photos = {},
+                    count = 0,
+                    total = 0,
+                    keywordFound = false
+                }
+            })
+            return
+        end
+
+        logger:info("Found keyword: " .. targetKeyword:getName() .. " (id=" .. targetKeyword.localIdentifier .. ")")
+
+        local allPhotos = targetKeyword:getPhotos()
+        local total = #allPhotos
+
+        logger:info("Keyword has " .. total .. " photos")
+
+        -- Apply pagination
+        local resultPhotos = {}
+        local endIdx = math.min(offset + limit, total)
+        for i = offset + 1, endIdx do
+            local photo = allPhotos[i]
+            table.insert(resultPhotos, {
+                id = photo.localIdentifier,
+                filename = photo:getFormattedMetadata("fileName"),
+                path = photo:getRawMetadata("path")
+            })
+        end
+
+        callback({
+            result = {
+                photos = resultPhotos,
+                count = #resultPhotos,
+                total = total,
+                keywordFound = true,
+                keywordName = targetKeyword:getName(),
+                keywordId = targetKeyword.localIdentifier,
+                offset = offset,
+                limit = limit,
+                hasMore = (offset + limit) < total
+            }
+        })
+    end)
+end
+
+-- Batch set metadata on all photos with a specific keyword (skip if already set)
+function CatalogModule.batchSetMetadataByKeyword(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordId = params and tonumber(params.keywordId)
+    local keywordName = params and params.keywordName
+    local field = params and params.field
+    local value = params and params.value
+    local dryRun = (params and params.dryRun) or false
+
+    if not keywordId and not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordId or keywordName is required" } })
+        return
+    end
+    if not field or not value then
+        callback({ error = { code = "MISSING_PARAM", message = "field and value are required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+
+    -- First pass: find keyword and count photos (read access)
+    local targetKeyword = nil
+    local photoList = {}
+
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+
+        if keywordId then
+            for _, kw in ipairs(allKeywords) do
+                if kw.localIdentifier == keywordId then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        else
+            for _, kw in ipairs(allKeywords) do
+                if kw:getName() == keywordName then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        end
+
+        if targetKeyword then
+            photoList = targetKeyword:getPhotos()
+        end
+    end)
+
+    if not targetKeyword then
+        callback({ result = { stamped = 0, skipped = 0, total = 0, keywordFound = false } })
+        return
+    end
+
+    local total = #photoList
+    logger:info("Batch set " .. field .. " = '" .. value .. "' on " .. total .. " photos (keyword: " .. targetKeyword:getName() .. ", dryRun=" .. tostring(dryRun) .. ")")
+
+    if dryRun then
+        -- Dry run: just count how many need updating
+        local needsUpdate = 0
+        local alreadySet = 0
+
+        catalog:withReadAccessDo(function()
+            for _, photo in ipairs(photoList) do
+                local current = photo:getFormattedMetadata(field) or ""
+                if current == value then
+                    alreadySet = alreadySet + 1
+                else
+                    needsUpdate = needsUpdate + 1
+                end
+            end
+        end)
+
+        callback({
+            result = {
+                stamped = 0,
+                wouldStamp = needsUpdate,
+                skipped = alreadySet,
+                total = total,
+                keywordFound = true,
+                keywordName = targetKeyword:getName(),
+                dryRun = true
+            }
+        })
+        return
+    end
+
+    -- Execute: stamp photos that need it
+    local stamped = 0
+    local skipped = 0
+    local errors = 0
+
+    catalog:withWriteAccessDo("Batch Set " .. field, function()
+        for _, photo in ipairs(photoList) do
+            local success, err = LrTasks.pcall(function()
+                local current = photo:getFormattedMetadata(field) or ""
+                if current == value then
+                    skipped = skipped + 1
+                else
+                    photo:setRawMetadata(field, value)
+                    stamped = stamped + 1
+                end
+            end)
+            if not success then
+                errors = errors + 1
+                logger:error("Failed to set metadata on photo: " .. tostring(err))
+            end
+        end
+    end)
+
+    logger:info("Batch complete: " .. stamped .. " stamped, " .. skipped .. " skipped, " .. errors .. " errors")
+
+    callback({
+        result = {
+            stamped = stamped,
+            skipped = skipped,
+            errors = errors,
+            total = total,
+            keywordFound = true,
+            keywordName = targetKeyword:getName(),
+            dryRun = false
+        }
+    })
+end
+
+-- Set metadata field on a photo (Artist, Caption, etc.)
+function CatalogModule.setPhotoMetadata(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local photoId = params and tonumber(params.photoId)
+    local field = params and params.field
+    local value = params and params.value
+
+    if not photoId then
+        callback({ error = { code = "MISSING_PARAM", message = "photoId is required" } })
+        return
+    end
+    if not field then
+        callback({ error = { code = "MISSING_PARAM", message = "field is required" } })
+        return
+    end
+
+    -- Whitelist of writable metadata fields
+    local writableFields = {
+        artist = true, caption = true, copyright = true,
+        title = true, headline = true,
+        city = true, state = true, country = true,
+        isoCountryCode = true, location = true,
+        creator = true, creatorJobTitle = true,
+        creatorAddress = true, creatorCity = true,
+        creatorStateProvince = true, creatorPostalCode = true,
+        creatorCountry = true, creatorPhone = true,
+        creatorEmail = true, creatorUrl = true
+    }
+
+    if not writableFields[field] then
+        callback({ error = {
+            code = "INVALID_PARAM",
+            message = "Field '" .. field .. "' is not writable. Allowed: artist, caption, copyright, title, headline, city, state, country, location, creator"
+        }})
+        return
+    end
+
+    logger:info("Setting " .. field .. " = '" .. tostring(value) .. "' on photo " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withWriteAccessDo("Set Photo Metadata", function()
+        local photo = catalog:getPhotoByLocalId(photoId)
+        if not photo then
+            callback({ error = { code = "PHOTO_NOT_FOUND", message = "Photo not found: " .. photoId } })
+            return
+        end
+
+        photo:setRawMetadata(field, value)
+
+        logger:info("Set " .. field .. " on photo " .. photoId)
+
+        callback({
+            result = {
+                photoId = photoId,
+                field = field,
+                value = value
+            }
+        })
+    end)
+end
+
+-- Remove keywords from a photo
+function CatalogModule.removePhotoKeywords(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local photoId = params and tonumber(params.photoId)
+    local keywords = params and params.keywords
+
+    if not photoId then
+        callback({ error = { code = "MISSING_PARAM", message = "photoId is required" } })
+        return
+    end
+    if not keywords or type(keywords) ~= "table" or #keywords == 0 then
+        callback({ error = { code = "MISSING_PARAM", message = "keywords array is required" } })
+        return
+    end
+
+    logger:info("Removing " .. #keywords .. " keywords from photo " .. photoId)
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withWriteAccessDo("Remove Keywords", function()
+        local photo = catalog:getPhotoByLocalId(photoId)
+        if not photo then
+            callback({ error = { code = "PHOTO_NOT_FOUND", message = "Photo not found: " .. photoId } })
+            return
+        end
+
+        local removed = {}
+        local photoKeywords = photo:getRawMetadata("keywords") or {}
+
+        for _, keywordName in ipairs(keywords) do
+            for _, kw in ipairs(photoKeywords) do
+                if kw:getName() == keywordName then
+                    photo:removeKeyword(kw)
+                    table.insert(removed, keywordName)
+                    break
+                end
+            end
+        end
+
+        logger:info("Removed " .. #removed .. " keywords from photo " .. photoId)
+
+        callback({
+            result = {
+                photoId = photoId,
+                keywordsRemoved = removed,
+                count = #removed
+            }
+        })
+    end)
+end
+
+-- Delete a keyword from the catalog entirely (removes from all photos)
+function CatalogModule.deleteKeyword(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordId = params and tonumber(params.keywordId)
+    local keywordName = params and params.keywordName
+    local dryRun = (params and params.dryRun) or false
+
+    if not keywordId and not keywordName then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordId or keywordName is required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local targetKeyword = nil
+    local photoCount = 0
+
+    -- Find the keyword (read access)
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+        if keywordId then
+            for _, kw in ipairs(allKeywords) do
+                if kw.localIdentifier == keywordId then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        else
+            for _, kw in ipairs(allKeywords) do
+                if kw:getName() == keywordName then
+                    targetKeyword = kw
+                    break
+                end
+            end
+        end
+
+        if targetKeyword then
+            photoCount = #targetKeyword:getPhotos()
+        end
+    end)
+
+    if not targetKeyword then
+        callback({ result = { deleted = false, message = "Keyword not found" } })
+        return
+    end
+
+    local kwName = targetKeyword:getName()
+    logger:info("Delete keyword: " .. kwName .. " (id=" .. targetKeyword.localIdentifier .. ", photos=" .. photoCount .. ", dryRun=" .. tostring(dryRun) .. ")")
+
+    if dryRun then
+        callback({
+            result = {
+                deleted = false,
+                dryRun = true,
+                keywordName = kwName,
+                keywordId = targetKeyword.localIdentifier,
+                photoCount = photoCount,
+                message = "Would delete keyword '" .. kwName .. "' affecting " .. photoCount .. " photos"
+            }
+        })
+        return
+    end
+
+    -- Delete (write access)
+    catalog:withWriteAccessDo("Delete Keyword", function()
+        catalog:deleteKeyword(targetKeyword)
+        logger:info("Deleted keyword: " .. kwName)
+
+        callback({
+            result = {
+                deleted = true,
+                keywordName = kwName,
+                keywordId = targetKeyword.localIdentifier,
+                photoCount = photoCount
+            }
+        })
+    end)
+end
+
+-- Batch delete keywords by pattern (for cleanup passes)
+function CatalogModule.batchDeleteKeywords(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local keywordIds = params and params.keywordIds
+    local dryRun = (params and params.dryRun) or false
+
+    if not keywordIds or type(keywordIds) ~= "table" or #keywordIds == 0 then
+        callback({ error = { code = "MISSING_PARAM", message = "keywordIds array is required" } })
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+
+    -- Find all keywords by ID (read access)
+    local toDelete = {}
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+        local idSet = {}
+        for _, id in ipairs(keywordIds) do
+            idSet[tonumber(id)] = true
+        end
+        for _, kw in ipairs(allKeywords) do
+            if idSet[kw.localIdentifier] then
+                table.insert(toDelete, {
+                    keyword = kw,
+                    name = kw:getName(),
+                    id = kw.localIdentifier
+                })
+            end
+        end
+    end)
+
+    logger:info("Batch delete: " .. #toDelete .. " of " .. #keywordIds .. " keywords found (dryRun=" .. tostring(dryRun) .. ")")
+
+    if dryRun then
+        local names = {}
+        for _, kw in ipairs(toDelete) do
+            table.insert(names, kw.name)
+        end
+        callback({
+            result = {
+                deleted = 0,
+                dryRun = true,
+                found = #toDelete,
+                requested = #keywordIds,
+                keywords = names
+            }
+        })
+        return
+    end
+
+    -- Delete in one write access call
+    local deleted = 0
+    catalog:withWriteAccessDo("Batch Delete Keywords", function()
+        for _, kw in ipairs(toDelete) do
+            local success, err = LrTasks.pcall(function()
+                catalog:deleteKeyword(kw.keyword)
+            end)
+            if success then
+                deleted = deleted + 1
+            else
+                logger:error("Failed to delete keyword: " .. kw.name .. " — " .. tostring(err))
+            end
+        end
+    end)
+
+    logger:info("Batch deleted: " .. deleted .. " keywords")
+
+    callback({
+        result = {
+            deleted = deleted,
+            requested = #keywordIds,
+            found = #toDelete
+        }
+    })
+end
+
+-- Get keywords in catalog (with pagination and optional photo counts)
+function CatalogModule.getKeywords(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local limit = (params and params.limit) or 500
+    local offset = (params and params.offset) or 0
+    local includeCounts = (params and params.includeCounts) or false
+
+    logger:info("Getting keywords (limit=" .. limit .. ", offset=" .. offset .. ", counts=" .. tostring(includeCounts) .. ")")
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withReadAccessDo(function()
+        local allKeywords = catalog:getKeywords()
+        local total = #allKeywords
+
+        -- Fast flat list — names and IDs only, no recursion, no photo queries
+        -- getChildren() and getPhotos() are too slow for large catalogs
+        local resultKeywords = {}
+        local endIdx = math.min(offset + limit, total)
+        for i = offset + 1, endIdx do
+            local keyword = allKeywords[i]
+            table.insert(resultKeywords, {
+                id = keyword.localIdentifier,
+                name = keyword:getName()
+            })
+        end
+
+        logger:info("Returning " .. #resultKeywords .. " of " .. total .. " top-level keywords")
+
+        callback({
+            result = {
+                keywords = resultKeywords,
+                count = #resultKeywords,
+                total = total,
+                offset = offset,
+                limit = limit,
+                hasMore = (offset + limit) < total
+            }
+        })
+    end)
+end
+
+-- Get folders in catalog
+function CatalogModule.getFolders(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+    local includeSubfolders = params.includeSubfolders or false
+
+    logger:debug("Getting folders from catalog")
+
+    local catalog = LrApplication.activeCatalog()
+
+    catalog:withReadAccessDo(function()
+        local rootFolders = catalog:getFolders()
+
+        local function buildFolderTree(folder, depth)
+            depth = depth or 0
+            local folderPath = folder:getPath()
+            local folderData = {
+                id = folderPath, -- Use path as ID since folders don't have localIdentifier
+                name = folder:getName(),
+                path = folderPath,
+                type = folder:type(),
+                depth = depth,
+                photoCount = #folder:getPhotos(false), -- Photos directly in this folder
+                totalPhotoCount = #folder:getPhotos(true), -- Photos including subfolders
+                subfolders = {}
+            }
+
+            -- Get parent folder info if available
+            local parent = folder:getParent()
+            if parent then
+                folderData.parentId = parent:getPath()
+                folderData.parentName = parent:getName()
+            end
+
+            -- Recursively get subfolders if requested
+            if includeSubfolders then
+                local children = folder:getChildren()
+                if children then
+                    for _, child in ipairs(children) do
+                        table.insert(folderData.subfolders, buildFolderTree(child, depth + 1))
+                    end
+                end
+            end
+
+            return folderData
+        end
+
+        local resultFolders = {}
+        for _, folder in ipairs(rootFolders) do
+            table.insert(resultFolders, buildFolderTree(folder))
+        end
+
+        logger:info("Retrieved " .. #resultFolders .. " root folders from catalog")
+
+        callback({
+            result = {
+                folders = resultFolders,
+                count = #resultFolders,
+                includeSubfolders = includeSubfolders
+            }
+        })
+    end)
 end
 
 -- Batch get formatted metadata for multiple photos

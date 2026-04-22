@@ -43,21 +43,25 @@
 
 ## Key Technical Decisions
 
-### 1. Dual Socket Pattern
-**Problem**: Lightroom's LrSocket is unidirectional (send OR receive, not both)
+### 1. Single Socket + HTTP Callback Pattern
+**Problem**: Lightroom's LrSocket `mode="send"` has a 10-second idle timeout. The original dual-socket architecture used a send-mode socket for Python to receive responses. After the initial `connection.established` event, the send-mode socket went idle and Lightroom closed it — causing all responses to be lost and 30-second timeouts on every command.
 
-**Solution**: Use two separate TCP sockets
-- **Send Socket**: MCP Server → Lightroom Plugin (commands)
-- **Receive Socket**: Lightroom Plugin → MCP Server (responses)
+**Credit**: Fix implemented by **[kmanley1](https://github.com/Kmanley1/lightroom_mcp)** in PR #9 (`windows-compat` branch), merged April 2026.
 
-**Critical Implementation Notes**:
-```python
-# CORRECT: Use obj.method(arg) for socket methods
-socket.send("data")
+**Solution**: Single `mode="receive"` TCP socket + HTTP POST callbacks
+- **Command Socket** (`mode="receive"`, port ~53101): Python → Lightroom Plugin (commands only)
+- **HTTP Callback Server** (port 54400): Lightroom Plugin → Python (responses via LrHttp.post)
 
-# WRONG: Do not use Lua's colon syntax with sockets
-socket:send("data")  # Will fail!
 ```
+Python sends command → TCP port 53101 → Lightroom receives
+Lightroom processes → LrHttp.post("http://localhost:54400/response") → Python HTTP server
+```
+
+**Key Implementation Notes**:
+- Python runs a ThreadingHTTPServer on port 54400
+- Lightroom wraps LrHttp.post() in LrTasks.startAsyncTask() to avoid blocking catalog handlers
+- Python uses `loop.call_soon_threadsafe()` to resolve futures from the HTTP server thread
+- Port file: `~/lightroom_ports.txt` (home dir via LrPathUtils.getStandardFilePath("home"))
 
 ### 2. Modular FastMCP Composition
 **Pattern**: Compose multiple FastMCP servers into one main server

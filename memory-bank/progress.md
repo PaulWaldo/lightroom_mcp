@@ -1,5 +1,34 @@
 # Progress
 
+## April 2026 - Socket Architecture Fix + New Catalog Tools ✅
+
+**Date**: April 22, 2026
+
+**Problem**: The original dual-socket architecture caused a fatal 30-second timeout on every command. Root cause: `LrSocket` `mode="send"` has a 10-second idle timeout. After Lightroom sent `connection.established`, the socket went idle and Lightroom closed it. Python's `_receive_loop` got EOF, `_connected = False`. Commands were still sent but responses never arrived.
+
+**Credit**: Fix by **[kmanley1](https://github.com/Kmanley1/lightroom_mcp)**, `windows-compat` branch (PR #9 upstream). Merged into our `main` April 2026.
+
+**Solution**: Single `mode="receive"` socket for commands + HTTP POST callbacks on port 54400 for responses.
+
+**Additional changes from kmanley1**:
+- Backslash escaping in `MessageProtocol.lua` (Windows path fix)
+- Removed rogue WTF logger from `Logger.lua`
+- Updated `PluginInit.lua`
+- 6 new catalog tools (see below)
+
+**New Catalog Tools Added**:
+- `catalog_get_keyword_photos` — Find photos with a specific keyword (by ID for speed, or name)
+- `catalog_set_photo_metadata` — Set writable metadata fields (artist, caption, copyright, etc.)
+- `catalog_batch_set_metadata_by_keyword` — Stamp metadata on all photos with a keyword (dry-run support)
+- `catalog_delete_keyword` — Delete a keyword from the catalog entirely (dry-run support)
+- `catalog_batch_delete_keywords` — Batch delete keywords by ID list (dry-run support)
+- `catalog_get_keywords` — Now paginated with limit/offset/include_counts params
+- `catalog_add_keywords` — Restored robust version with ErrorUtils wrapping and deduplication
+
+**Files Modified**: `SimpleSocketBridge.lua`, `socket_bridge.py`, `client.py`, `CatalogModule.lua`, `catalog.py`, `MessageProtocol.lua`, `Logger.lua`, `PluginInit.lua`, memory bank docs
+
+---
+
 ## February 2026 - Plugin Metadata Discovery Enhancement ✅
 
 **Date**: February 23, 2026

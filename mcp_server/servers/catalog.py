@@ -100,7 +100,12 @@ class CatalogServer(LightroomServerModule):
 
         @self.server.tool
         async def catalog_search_photos(
-            criteria: Dict[str, Any],
+            keyword: Optional[str] = None,
+            rating_min: Optional[int] = None,
+            rating_max: Optional[int] = None,
+            file_format: Optional[str] = None,
+            date_after: Optional[str] = None,
+            date_before: Optional[str] = None,
             limit: int = 100
         ) -> Dict[str, Any]:
             """
@@ -109,16 +114,35 @@ class CatalogServer(LightroomServerModule):
             Powerful search for AI agents to find specific photos.
 
             Args:
-                criteria: Search criteria dict with fields like:
-                    - rating: {"min": 3, "max": 5}
-                    - captureDate: {"after": "2023-01-01"}
-                    - keywords: ["landscape", "sunset"]
-                    - fileFormat: "RAW"
-                limit: Maximum results
+                keyword: Search by keyword name
+                rating_min: Minimum star rating (1-5)
+                rating_max: Maximum star rating (1-5)
+                file_format: Filter by format (RAW, JPEG, etc.)
+                date_after: Photos after this date (YYYY-MM-DD)
+                date_before: Photos before this date (YYYY-MM-DD)
+                limit: Maximum results (default 100)
 
             Returns:
                 Matching photos
             """
+            criteria = {}
+            if keyword:
+                criteria["keyword"] = keyword
+            if rating_min is not None or rating_max is not None:
+                criteria["rating"] = {}
+                if rating_min is not None:
+                    criteria["rating"]["min"] = rating_min
+                if rating_max is not None:
+                    criteria["rating"]["max"] = rating_max
+            if file_format:
+                criteria["fileFormat"] = file_format
+            if date_after:
+                criteria["captureDate"] = criteria.get("captureDate", {})
+                criteria["captureDate"]["after"] = date_after
+            if date_before:
+                criteria["captureDate"] = criteria.get("captureDate", {})
+                criteria["captureDate"]["before"] = date_before
+
             result = await self.execute_command("searchPhotos", {
                 "criteria": criteria,
                 "limit": limit
@@ -175,20 +199,37 @@ class CatalogServer(LightroomServerModule):
             }
 
         @self.server.tool
-        async def catalog_get_keywords() -> Dict[str, Any]:
+        async def catalog_get_keywords(
+            limit: int = 500,
+            offset: int = 0,
+            include_counts: bool = False
+        ) -> Dict[str, Any]:
             """
-            Get all keywords used in the catalog.
+            Get keywords in the catalog with pagination.
 
             Helps AI agents understand photo categorization.
+            Use include_counts=True for photo counts (slower).
+
+            Args:
+                limit: Max keywords to return (default 500)
+                offset: Starting position for pagination
+                include_counts: Include photo count per keyword (slow for large catalogs)
 
             Returns:
-                Keywords with usage counts
+                Keywords with optional usage counts, pagination info
             """
-            result = await self.execute_command("getKeywords")
+            result = await self.execute_command("getKeywords", {
+                "limit": limit,
+                "offset": offset,
+                "includeCounts": include_counts
+            })
 
             return {
                 "success": True,
-                "count": len(result.get("keywords", [])),
+                "count": result.get("count", 0),
+                "total": result.get("total", 0),
+                "offset": result.get("offset", 0),
+                "has_more": result.get("hasMore", False),
                 "keywords": result.get("keywords", [])
             }
 
@@ -272,6 +313,174 @@ class CatalogServer(LightroomServerModule):
             }
 
         @self.server.tool
+        async def catalog_get_keyword_photos(
+            keyword_id: Optional[int] = None,
+            keyword_name: Optional[str] = None,
+            limit: int = 100,
+            offset: int = 0
+        ) -> Dict[str, Any]:
+            """
+            Find all photos that have a specific keyword assigned.
+            Use keyword_id for fast lookup (get IDs from catalog_get_keywords).
+
+            Args:
+                keyword_id: Keyword ID (fast — direct lookup)
+                keyword_name: Keyword name (slower — scans all keywords)
+                limit: Max photos to return (default 100)
+                offset: Starting position for pagination
+
+            Returns:
+                Photos with the keyword, pagination info
+            """
+            params: Dict[str, Any] = {"limit": limit, "offset": offset}
+            if keyword_id is not None:
+                params["keywordId"] = keyword_id
+            elif keyword_name is not None:
+                params["keywordName"] = keyword_name
+            else:
+                return {"success": False, "error": "keyword_id or keyword_name required"}
+
+            result = await self.execute_command("getKeywordPhotos", params)
+
+            return {
+                "success": True,
+                "keyword": keyword_name or f"id:{keyword_id}",
+                "matched_keywords": result.get("matchedKeywords", 0),
+                "count": result.get("count", 0),
+                "total": result.get("total", 0),
+                "has_more": result.get("hasMore", False),
+                "photos": result.get("photos", [])
+            }
+
+        @self.server.tool
+        async def catalog_set_photo_metadata(
+            photo_id: Union[str, int],
+            field: str,
+            value: str
+        ) -> Dict[str, Any]:
+            """
+            Set a metadata field on a photo (Artist, Caption, etc.).
+
+            Args:
+                photo_id: Photo ID
+                field: Metadata field name (artist, caption, copyright, title,
+                       headline, city, state, country, location, creator)
+                value: Value to set
+
+            Returns:
+                Confirmation of the update
+            """
+            await self.execute_command("setPhotoMetadata", {
+                "photoId": str(photo_id),
+                "field": field,
+                "value": value
+            })
+
+            return {
+                "success": True,
+                "photo_id": str(photo_id),
+                "field": field,
+                "value": value
+            }
+
+        @self.server.tool
+        async def catalog_batch_set_metadata_by_keyword(
+            field: str,
+            value: str,
+            keyword_id: Optional[int] = None,
+            keyword_name: Optional[str] = None,
+            dry_run: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Batch set a metadata field on all photos with a specific keyword.
+            Skips photos that already have the correct value.
+            Dry run by default — shows what would change without changing it.
+
+            Args:
+                field: Metadata field (artist, caption, copyright, title, etc.)
+                value: Value to set
+                keyword_id: Keyword ID (fast lookup)
+                keyword_name: Keyword name (slower, scans catalog)
+                dry_run: If True, report what would change without changing (default True)
+
+            Returns:
+                Count of stamped, skipped, and total photos
+            """
+            params: Dict[str, Any] = {"field": field, "value": value, "dryRun": dry_run}
+            if keyword_id is not None:
+                params["keywordId"] = keyword_id
+            elif keyword_name is not None:
+                params["keywordName"] = keyword_name
+            else:
+                return {"success": False, "error": "keyword_id or keyword_name required"}
+
+            result = await self.execute_command("batchSetMetadataByKeyword", params)
+
+            return {
+                "success": True,
+                "field": field,
+                "value": value,
+                "keyword": result.get("keywordName", ""),
+                "stamped": result.get("stamped", 0),
+                "would_stamp": result.get("wouldStamp", 0),
+                "skipped": result.get("skipped", 0),
+                "errors": result.get("errors", 0),
+                "total": result.get("total", 0),
+                "dry_run": dry_run
+            }
+
+        @self.server.tool
+        async def catalog_delete_keyword(
+            keyword_id: Optional[int] = None,
+            keyword_name: Optional[str] = None,
+            dry_run: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Delete a keyword from the catalog entirely.
+            Removes it from all photos. Dry run by default.
+
+            Args:
+                keyword_id: Keyword ID (fast lookup)
+                keyword_name: Keyword name (slower)
+                dry_run: If True, report what would happen (default True)
+
+            Returns:
+                Deletion result with photo count affected
+            """
+            params: Dict[str, Any] = {"dryRun": dry_run}
+            if keyword_id is not None:
+                params["keywordId"] = keyword_id
+            elif keyword_name is not None:
+                params["keywordName"] = keyword_name
+            else:
+                return {"success": False, "error": "keyword_id or keyword_name required"}
+
+            result = await self.execute_command("deleteKeyword", params)
+            return {"success": True, **result}
+
+        @self.server.tool
+        async def catalog_batch_delete_keywords(
+            keyword_ids: List[int],
+            dry_run: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Batch delete keywords from the catalog by ID.
+            Dry run by default. Use for cleanup passes.
+
+            Args:
+                keyword_ids: List of keyword IDs to delete
+                dry_run: If True, report what would happen (default True)
+
+            Returns:
+                Count of deleted keywords
+            """
+            result = await self.execute_command("batchDeleteKeywords", {
+                "keywordIds": keyword_ids,
+                "dryRun": dry_run
+            })
+            return {"success": True, "dry_run": dry_run, **result}
+
+        @self.server.tool
         async def catalog_get_photo_info(
             photo_id: Union[str, int]
         ) -> Dict[str, Any]:
@@ -333,7 +542,6 @@ class CatalogServer(LightroomServerModule):
 
             metadata = result.get("metadata", {})
 
-            # Detect empty metadata and provide helpful guidance
             response = {
                 "success": True,
                 "photo_id": result.get("photoId"),
@@ -373,22 +581,6 @@ class CatalogServer(LightroomServerModule):
 
             Returns:
                 Dictionary of plugins with their available fields and values
-
-            Example:
-                # Discover what plugins have metadata for this photo
-                result = await catalog_discover_plugin_metadata(photo_id='12345')
-                # Returns:
-                # {
-                #   "plugins": {
-                #     "com.frostcat.dominantcolor": {
-                #       "fields": {
-                #         "color": "Black",
-                #         "treatment": "Color",
-                #         "brightness": "Dark"
-                #       }
-                #     }
-                #   }
-                # }
             """
             result = await self.execute_command("plugin.discoverMetadata", {
                 "photoId": str(photo_id)
@@ -425,14 +617,6 @@ class CatalogServer(LightroomServerModule):
 
             Returns:
                 Metadata organized by photo ID
-
-            Example:
-                # Batch get dominant colors for 100 photos
-                result = await catalog_batch_get_plugin_metadata(
-                    photo_ids=photo_ids[:100],
-                    plugin_id='com.frostcat.dominantcolor',
-                    field_ids=['dominantColor']
-                )
             """
             result = await self.execute_command("plugin.batchGetMetadata", {
                 "photoIds": [str(pid) for pid in photo_ids],
@@ -468,20 +652,6 @@ class CatalogServer(LightroomServerModule):
 
             Returns:
                 Matching photos with basic info
-
-            Example:
-                # Find all photos with blue dominant color
-                result = await catalog_search_by_plugin_property(
-                    plugin_id='com.frostcat.dominantcolor',
-                    field_id='dominantColor',
-                    value='blue'
-                )
-
-                # Find all photos that have been tagged by a plugin
-                result = await catalog_search_by_plugin_property(
-                    plugin_id='com.example.tagger',
-                    field_id='tagged'
-                )
             """
             result = await self.execute_command("plugin.findPhotosWithProperty", {
                 "pluginId": plugin_id,

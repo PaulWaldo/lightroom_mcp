@@ -60,8 +60,9 @@ function PreviewModule.generatePreview(params, callback)
     local quality = params.quality or 90
     local format = params.format or "jpeg"
     local base64Encode = params.base64 ~= false  -- default to true
-    
-    if not photoId then
+
+    -- Guard against nil or the JSON-decoded string "null" (tonumber("null") == nil → crash)
+    if not photoId or photoId == "null" then
         callback({
             error = {
                 code = "MISSING_PHOTO_ID",
@@ -70,15 +71,15 @@ function PreviewModule.generatePreview(params, callback)
         })
         return
     end
-    
+
     logger:debug("Generating preview for photo: " .. photoId .. " (size: " .. tostring(size) .. ")")
-    
+
     LrTasks.startAsyncTask(function()
         local catalog = LrApplication.activeCatalog()
-        
+
         catalog:withReadAccessDo(function()
             local photo = catalog:getPhotoByLocalId(tonumber(photoId))
-            
+
             if not photo then
                 callback({
                     error = {
@@ -88,14 +89,14 @@ function PreviewModule.generatePreview(params, callback)
                 })
                 return
             end
-        
+
             local progressScope = LrProgressScope({
             title = "Generating Preview",
             caption = "Preparing preview generation..."
         })
-        
+
         progressScope:setPortionComplete(0.1)
-            
+
             -- Determine pixel size
             local pixelSize
             if size == "small" then
@@ -115,15 +116,15 @@ function PreviewModule.generatePreview(params, callback)
                 })
                 return
             end
-            
+
             progressScope:setCaption("Generating " .. pixelSize .. "px preview...")
             progressScope:setPortionComplete(0.3)
-            
+
             -- Generate preview
             local previewGenerated = false
             local previewError = nil
             local jpegData = nil
-            
+
             photo:requestJpegThumbnail(pixelSize, pixelSize, function(jpg, errorMessage)
                 if errorMessage then
                     logger:error("Preview generation error: " .. errorMessage)
@@ -134,7 +135,7 @@ function PreviewModule.generatePreview(params, callback)
                 end
                 previewGenerated = true
             end)
-            
+
             -- Wait for async operation to complete
             while not previewGenerated do
                 LrTasks.sleep(0.1)
@@ -149,7 +150,7 @@ function PreviewModule.generatePreview(params, callback)
                     return
                 end
             end
-            
+
             if previewError then
                 callback({
                     error = {
@@ -159,7 +160,7 @@ function PreviewModule.generatePreview(params, callback)
                 })
                 return
             end
-            
+
             if not jpegData then
                 callback({
                     error = {
@@ -169,23 +170,23 @@ function PreviewModule.generatePreview(params, callback)
                 })
                 return
             end
-            
+
             progressScope:setCaption("Processing preview data...")
             progressScope:setPortionComplete(0.8)
-            
+
             -- Check if data is too large for single JSON message (>10MB when base64 encoded)
             local base64Size = math.ceil(string.len(jpegData) * 4 / 3)  -- base64 is ~33% larger
             local useLargeDataTransfer = (base64Size > 10 * 1024 * 1024)  -- 10MB limit
-            
+
             if useLargeDataTransfer then
                 -- For large data: return metadata only, client will request chunks separately
                 logger:info("Large preview detected (" .. base64Size .. " bytes base64), using chunked transfer")
-                
+
                 -- Store preview data globally for chunked retrieval
                 if not _G.LightroomPythonBridge.previewCache then
                     _G.LightroomPythonBridge.previewCache = {}
                 end
-                
+
                 local previewId = photoId .. "_" .. os.time()
                 _G.LightroomPythonBridge.previewCache[previewId] = {
                     data = jpegData,
@@ -193,11 +194,11 @@ function PreviewModule.generatePreview(params, callback)
                     timestamp = os.time(),
                     size = string.len(jpegData)
                 }
-                
+
                 progressScope:setCaption("Preview prepared for chunked transfer")
                 progressScope:setPortionComplete(1.0)
                 progressScope:done()
-                
+
                 callback({
                     result = {
                         preview = "CHUNKED_TRANSFER",
@@ -221,13 +222,13 @@ function PreviewModule.generatePreview(params, callback)
                 if base64Encode then
                     previewData = LrStringUtils.encodeBase64(jpegData)
                 end
-                
+
                 progressScope:setCaption("Preview generated successfully")
                 progressScope:setPortionComplete(1.0)
                 progressScope:done()
-                
+
                 logger:info("Generated " .. pixelSize .. "px preview (" .. string.len(jpegData) .. " bytes)")
-                
+
                 callback({
                     result = {
                         preview = previewData,
@@ -256,7 +257,7 @@ function PreviewModule.generateBatchPreviews(params, callback)
     local size = params.size or "medium"
     local quality = params.quality or 90
     local base64Encode = params.base64 ~= false  -- default to true
-    
+
     if not photoIds or type(photoIds) ~= "table" or #photoIds == 0 then
         callback({
             error = {
@@ -266,15 +267,15 @@ function PreviewModule.generateBatchPreviews(params, callback)
         })
         return
     end
-    
+
     logger:info("Generating batch previews for " .. #photoIds .. " photos")
-    
+
     LrTasks.startAsyncTask(function()
         local catalog = LrApplication.activeCatalog()
-        
+
         catalog:withReadAccessDo(function()
             local results = {}
-        
+
             -- Determine pixel size
         local pixelSize
         if size == "small" then
@@ -294,23 +295,23 @@ function PreviewModule.generateBatchPreviews(params, callback)
             })
             return
         end
-        
+
         local progressScope = LrProgressScope({
             title = "Batch Preview Generation",
             caption = "Preparing batch preview generation..."
         })
-            
+
             for i, photoId in ipairs(photoIds) do
                 if progressScope:isCanceled() then
                     logger:info("Batch preview generation cancelled by user")
                     break
                 end
-                
+
                 progressScope:setCaption("Generating preview " .. i .. " of " .. #photoIds)
                 progressScope:setPortionComplete(i / #photoIds)
-                
+
                 local photo = catalog:getPhotoByLocalId(tonumber(photoId))
-                
+
                 if not photo then
                     table.insert(results, {
                         photoId = photoId,
@@ -322,7 +323,7 @@ function PreviewModule.generateBatchPreviews(params, callback)
                     local previewGenerated = false
                     local previewError = nil
                     local jpegData = nil
-                    
+
                     photo:requestJpegThumbnail(pixelSize, pixelSize, function(jpg, errorMessage)
                         if errorMessage then
                             previewError = errorMessage
@@ -331,12 +332,12 @@ function PreviewModule.generateBatchPreviews(params, callback)
                         end
                         previewGenerated = true
                     end)
-                    
+
                     -- Wait for async operation
                     while not previewGenerated do
                         LrTasks.sleep(0.1)
                     end
-                    
+
                     if previewError or not jpegData then
                         table.insert(results, {
                             photoId = photoId,
@@ -348,7 +349,7 @@ function PreviewModule.generateBatchPreviews(params, callback)
                         if base64Encode then
                             previewData = LrStringUtils.encodeBase64(jpegData)
                         end
-                        
+
                         table.insert(results, {
                             photoId = photoId,
                             success = true,
@@ -359,24 +360,24 @@ function PreviewModule.generateBatchPreviews(params, callback)
                         })
                     end
                 end
-                
+
                 LrTasks.yield()
             end
-            
+
             progressScope:setCaption("Batch preview generation complete")
             progressScope:setPortionComplete(1.0)
-        
+
         progressScope:done()
-        
+
         local successCount = 0
         for _, result in ipairs(results) do
             if result.success then
                 successCount = successCount + 1
             end
         end
-        
+
         logger:info("Batch preview generation completed: " .. successCount .. "/" .. #results .. " successful")
-        
+
         callback({
             result = {
                 processed = #results,
@@ -393,8 +394,9 @@ function PreviewModule.getPreviewInfo(params, callback)
     ensureLrModules()
     local logger = getLogger()
     local photoId = params.photoId
-    
-    if not photoId then
+
+    -- Guard against nil or the JSON-decoded string "null"
+    if not photoId or photoId == "null" then
         callback({
             error = {
                 code = "MISSING_PHOTO_ID",
@@ -403,15 +405,15 @@ function PreviewModule.getPreviewInfo(params, callback)
         })
         return
     end
-    
+
     logger:debug("Getting preview info for photo: " .. photoId)
-    
+
     LrTasks.startAsyncTask(function()
         local catalog = LrApplication.activeCatalog()
-        
+
         catalog:withReadAccessDo(function()
             local photo = catalog:getPhotoByLocalId(tonumber(photoId))
-            
+
             if not photo then
                 callback({
                     error = {
@@ -421,11 +423,11 @@ function PreviewModule.getPreviewInfo(params, callback)
                 })
                 return
             end
-            
+
             -- Get basic photo dimensions and format info
             local metadata = photo:getRawMetadata("dimensions")
             local fileFormat = photo:getRawMetadata("fileFormat")
-            
+
             local previewInfo = {
                 photoId = photoId,
                 filename = photo:getFormattedMetadata("fileName"),
@@ -439,9 +441,9 @@ function PreviewModule.getPreviewInfo(params, callback)
                     large = 1024
                 }
             }
-            
+
             logger:debug("Retrieved preview info for: " .. previewInfo.filename)
-            
+
             callback({
                 result = previewInfo
             })
@@ -455,7 +457,7 @@ function PreviewModule.getPreviewChunk(params, callback)
     local previewId = params.previewId
     local chunkIndex = params.chunkIndex or 0
     local chunkSize = params.chunkSize or (1024 * 1024)  -- 1MB default
-    
+
     if not previewId then
         callback({
             error = {
@@ -465,7 +467,7 @@ function PreviewModule.getPreviewChunk(params, callback)
         })
         return
     end
-    
+
     if not _G.LightroomPythonBridge.previewCache then
         callback({
             error = {
@@ -475,7 +477,7 @@ function PreviewModule.getPreviewChunk(params, callback)
         })
         return
     end
-    
+
     local cachedPreview = _G.LightroomPythonBridge.previewCache[previewId]
     if not cachedPreview then
         callback({
@@ -486,21 +488,21 @@ function PreviewModule.getPreviewChunk(params, callback)
         })
         return
     end
-    
+
     logger:debug("Getting chunk " .. chunkIndex .. " for preview: " .. previewId)
-    
+
     local data = cachedPreview.data
     if cachedPreview.base64Encoded then
         data = LrStringUtils.encodeBase64(data)
     end
-    
+
     local startPos = (chunkIndex * chunkSize) + 1
     local endPos = math.min(startPos + chunkSize - 1, string.len(data))
     local chunk = string.sub(data, startPos, endPos)
     local isLastChunk = (endPos >= string.len(data))
-    
+
     logger:debug("Chunk " .. chunkIndex .. ": " .. string.len(chunk) .. " bytes, last=" .. tostring(isLastChunk))
-    
+
     callback({
         result = {
             chunk = chunk,
@@ -510,7 +512,7 @@ function PreviewModule.getPreviewChunk(params, callback)
             chunkSize = string.len(chunk)
         }
     })
-    
+
     -- Clean up cache if this was the last chunk
     if isLastChunk then
         _G.LightroomPythonBridge.previewCache[previewId] = nil

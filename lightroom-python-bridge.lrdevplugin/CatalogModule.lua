@@ -223,7 +223,8 @@ function CatalogModule.getPhotoMetadata(params, callback)
         photoId = result
     end
 
-    if not photoId then
+    -- Guard against nil or the JSON-decoded string "null" (tonumber("null") == nil → crash)
+    if not photoId or photoId == "null" then
         callback({
             error = {
                 code = "MISSING_PHOTO_ID",
@@ -654,7 +655,8 @@ function CatalogModule.addPhotoKeywords(params, callback)
     local keywords = params.keywords
 
     -- Validate parameters
-    if not photoId then
+    -- Guard against nil or the JSON-decoded string "null" (tonumber("null") == nil → crash)
+    if not photoId or photoId == "null" then
         wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.MISSING_PARAM,
             "Photo ID is required"))
         return

@@ -26,28 +26,50 @@ Copy `lightroom-python-bridge.lrdevplugin` to:
 In Lightroom: `File → Plug-in Extras → Start Python Bridge`
 
 ### 3. Install Dependencies
+
+**Recommended: [uv](https://docs.astral.sh/uv/) (fast Python package manager)**
+```bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies and create virtualenv automatically
+uv sync
+```
+
+**Alternative: pip**
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 4. Run MCP Server
+
+**With uv (recommended):**
 ```bash
-python -m mcp_server.main
+uv run python -m mcp_server.main
 ```
 
-**Alternative execution methods:**
+**With pip/virtualenv:**
 ```bash
-# Direct execution
-python mcp_server/main.py
-
-# With virtual environment
-./venv/bin/python -m mcp_server.main
+python -m mcp_server.main
 ```
 
 ## Usage with Claude Desktop
 
 Add to your `claude_desktop_config.json`:
 
+**Using uv (recommended):**
+```json
+{
+  "mcpServers": {
+    "lightroom": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/lightroom_mcp", "run", "python", "-m", "mcp_server.main"]
+    }
+  }
+}
+```
+
+**Using system Python:**
 ```json
 {
   "mcpServers": {
@@ -60,16 +82,46 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-**Claude Code via JSON**
+## Usage with Claude Code
+
+**Using uv (recommended):**
+```bash
+claude mcp add-json -s user lightroom '{
+  "command": "uv",
+  "args": ["--directory", "/path/to/lightroom_mcp", "run", "python", "-m", "mcp_server.main"]
+}'
 ```
-claude mcp add-json -s user Lightroom '{
-    "command": "<path to repo>/lightroom_mcp/venv/bin/python",
-    "args": ["<path to repo>/lightroom_mcp/mcp_server/main.py"],
-    "env": {
-      "PYTHONPATH": "<path to repo>/lightroom_mcp"
+
+**Using a virtualenv Python directly:**
+```bash
+claude mcp add-json -s user lightroom '{
+  "command": "/path/to/lightroom_mcp/venv/bin/python",
+  "args": ["/path/to/lightroom_mcp/mcp_server/main.py"],
+  "env": {
+    "PYTHONPATH": "/path/to/lightroom_mcp"
+  }
+}'
+```
+
+## Usage with LM Studio
+
+Add to your MCP configuration in LM Studio:
+
+```json
+{
+  "mcpServers": {
+    "lightroom": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/lightroom_mcp", "run", "python", "-m", "mcp_server.main"]
     }
-  }'
-  ```
+  }
+}
+```
+
+> **Note**: LM Studio's MCP client does not currently pass `ImageContent` tool results to the
+> LLM's vision encoder. The `preview_get_image_data` tool will return an image content block
+> that LM Studio cannot display. As a workaround, use `preview_generate` instead — it saves
+> the preview to disk and returns the file path, which you can open manually.
 
 ## Sample Prompts
 
@@ -88,6 +140,11 @@ claude mcp add-json -s user Lightroom '{
 **Preview generation:**
 > "Generate a medium-sized JPEG preview of the current photo and save it as 'hero_image.jpg'"
 
+**Visual inspection:**
+> "Show me the current photo so I can evaluate the exposure"
+
+> "Examine all the selected photos and tell me how the content differs"
+
 **Histogram analysis:**
 > "Analyze the RGB histogram of the current photo and tell me if it's properly exposed"
 
@@ -96,21 +153,22 @@ claude mcp add-json -s user Lightroom '{
 
 ## MCP Tools Overview
 
-**System** (2 tools): `system_ping`, `system_status`
+**System** (4 tools): `system_ping`, `system_status`, `system_reconnect`, `system_check_photo_selected`
 
-**Catalog** (11 tools): Photo search, metadata extraction, folder/collection management, selection control
+**Catalog** (21 tools): Photo search, metadata extraction, folder/collection management, selection control, keyword management, plugin metadata access
 
 **Develop** (49 tools): All basic adjustments (exposure, contrast, etc.), tone curves, HSL/color, detail, lens corrections, effects, calibration, masking
 
-**Preview** (4 tools): Generate optimized JPEGs with automatic PIL-based resizing
+**Preview** (6 tools): Generate optimized JPEGs with automatic PIL-based resizing; `preview_get_image_data` returns a proper MCP `ImageContent` block for vision-capable LLMs
 
 **Histogram** (3 tools): RGB, luminance, and full spectrum analysis
 
 ## Requirements
 
 - **Lightroom Classic** 12.x or newer
-- **Python** 3.8+
-- **Dependencies**: FastMCP, Pillow, NumPy (see requirements.txt)
+- **Python** 3.10+ (3.14+ recommended)
+- **uv** (recommended) or pip
+- **Dependencies**: FastMCP, Pillow, NumPy (see `pyproject.toml`)
 
 ## Architecture
 
@@ -120,15 +178,15 @@ claude mcp add-json -s user Lightroom '{
 
 ### MCP Server Components
 - **Main Server**: `mcp_server/main.py` - FastMCP composition layer
-- **Modular Servers**: System, Catalog, Develop (9 modules), Preview  
+- **Modular Servers**: System, Catalog, Develop (9 modules), Preview
 - **Resilient Client**: Auto-reconnection and timeout handling
 - **Error Middleware**: Comprehensive error handling and validation
 - **Lightroom SDK**: Type-safe Python client with structured exceptions
 
-### Lightroom Bridge Components  
+### Lightroom Bridge Components
 - **Plugin**: `lightroom-python-bridge.lrdevplugin` - Lua-based Lightroom extension
-- **Dual Sockets**: JSON-RPC over TCP (LrSocket limitation requires separate send/receive)
-- **Command Router**: Dynamic dispatch with 66 registered handlers
+- **Single Socket + HTTP Callback**: Single `mode="receive"` TCP socket for commands + HTTP POST callbacks on port 54400 for responses
+- **Command Router**: Dynamic dispatch with 69+ registered handlers
 - **Protocol**: JSON with chunked transfer for large data (>10MB)
 
 ## Key Notes
@@ -137,6 +195,7 @@ claude mcp add-json -s user Lightroom '{
 - Preview generation uses PIL for resizing since Lightroom returns full-resolution images
 - Most develop operations require a photo to be selected in Lightroom and the Develop tab open
 - Chunked transfer automatically handles large preview files (>10MB)
+- `preview_get_image_data` returns a proper MCP `ImageContent` block — works with Claude Desktop, Continue, and other spec-compliant MCP clients
 
 ## Error Handling
 
@@ -144,7 +203,7 @@ The server provides comprehensive error handling with structured exceptions:
 
 **Common Error Types:**
 - `PhotoNotSelectedError` - No photo selected in Lightroom
-- `ParameterOutOfRangeError` - Parameter value outside valid range  
+- `ParameterOutOfRangeError` - Parameter value outside valid range
 - `PhotoNotFoundError` - Photo with given ID not found
 - `ConnectionError` - Socket connection issues
 - `CatalogAccessError` - Failed to access Lightroom catalog
@@ -170,13 +229,14 @@ The server provides comprehensive error handling with structured exceptions:
 - Plugin not appearing: Restart Lightroom after installation
 - Connection errors: Ensure bridge is started via `File → Plug-in Extras → Start Python Bridge`
 - Parameter errors: Verify a photo is selected in Lightroom before develop operations
+- Port conflict: Ensure ports 53101 (commands) and 54400 (HTTP callbacks) are free
 
 ## Testing
 
 ```bash
 # Run Python tests
-python -m pytest lightroom_sdk/tests/
+uv run python -m pytest lightroom_sdk/tests/
 
-# Test MCP server directly
-python -c "from mcp_server.main import main_server; print('Server loaded successfully')"
+# Test MCP server import
+uv run python -c "from mcp_server.main import main_server; print('Server loaded successfully')"
 ```

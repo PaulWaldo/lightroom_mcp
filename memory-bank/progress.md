@@ -1,5 +1,21 @@
 # Progress
 
+## April 2026 - preview_get_image_data ImageContent Fix ✅
+
+**Date**: April 24, 2026
+
+**Problem**: `preview_get_image_data` returned a plain Python `dict` containing `"image_data": "<base64>"`. FastMCP serialized this as a `TextContent` JSON blob. No `ImageContent` MCP block was ever emitted, so vision-capable LLMs (including Claude Desktop) never received the image through the correct content channel.
+
+**Root cause** (two layers):
+1. **Our bug**: Returning a dict → FastMCP emits `TextContent`, not `ImageContent`
+2. **LM Studio bug (external)**: Even with a correct `ImageContent` block, LM Studio's MCP client doesn't pass tool-result images to the vision encoder — unfixable on our end
+
+**Fix**: `preview_get_image_data` now returns `FastMCPImage(data=jpeg_bytes, format="jpeg")` using `fastmcp.utilities.types.Image`. This emits a proper `{"type": "image", "data": "<base64>", "mimeType": "image/jpeg"}` MCP `ImageContent` block. LM Studio users are directed to use `preview_generate` (disk) instead.
+
+**Files Modified**: `mcp_server/servers/preview.py`, memory bank docs, `README.md`
+
+---
+
 ## April 2026 - Socket Architecture Fix + New Catalog Tools ✅
 
 **Date**: April 22, 2026
@@ -162,10 +178,11 @@ Plus:
 - `develop_reset_to_default` - Reset individual parameters
 
 ### ✅ Preview Generation (Complete)
-- `preview_generate` - Generate JPEG with size/quality control
-- `preview_generate_current` - Quick current photo preview
+- `preview_generate` - Generate JPEG, saves to system temp dir (auto-cleanup), returns file path only
+- `preview_get_image_data` - **NEW** Returns base64-encoded JPEG inline; no filesystem access needed; recommended for sandboxed LLMs
+- `preview_generate_current` - Quick current photo preview, saves to system temp dir
 - `preview_get_info` - Preview metadata
-- `preview_generate_comparison` - Before/after comparison
+- `preview_generate_comparison` - Before/after comparison, saves to system temp dir
 - `preview_generate_batch` - Efficient batch generation
 
 ### ✅ Histogram Analysis (Complete)

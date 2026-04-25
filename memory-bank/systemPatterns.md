@@ -288,16 +288,27 @@ async def handle_error(error):
 7. 10-20x faster than individual calls
 ```
 
-### Path 3: Preview Generation
+### Path 3: Preview Generation (disk)
 ```
-1. AI Agent: "Generate medium preview"
-2. MCP Tool: preview_generate_current(size="medium")
-3. Lightroom: Generate full-resolution JPEG
-4. Data > 10MB: Automatic chunking
-5. Python: Reassemble chunks
-6. PIL: Resize to 1080px longest edge
-7. Save to disk: preview_<timestamp>.jpg
-8. Return: {file_path: "...", width: 1080}
+1. AI Agent: "Save a preview file"
+2. MCP Tool: preview_generate(size="medium")
+3. _fetch_preview_data(): Lightroom generates full-res JPEG
+4. Data > 10MB: Automatic socket-level chunking reassembled internally
+5. _process_preview_data(): PIL resize to 1080px longest edge + re-compress
+6. _generate_preview_filename(): path in system temp dir (auto-cleanup)
+7. _save_preview_to_disk(): write JPEG bytes
+8. Return: {file_path: "/tmp/lr_preview_...", width: 1080}
+```
+
+### Path 3b: Preview Generation (inline, sandboxed LLM)
+```
+1. AI Agent: "Show me the photo" (or unsure about filesystem access)
+2. MCP Tool: preview_get_image_data(size="medium")
+3. _fetch_preview_data(): same as above
+4. _process_preview_data(): same resize + re-compress
+5. base64.b64encode(jpeg_bytes) — no disk write
+6. Return: {image_data: "<base64>", mime_type: "image/jpeg", width: 1080}
+   LLM can decode and display inline; no filesystem required
 ```
 
 ### Path 4: Error Recovery

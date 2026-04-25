@@ -11,6 +11,27 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 75
 
 ## Recent Changes & Implementations
 
+### April 2026 - preview_get_image_data: Proper MCP ImageContent Block
+
+**Problem**: `preview_get_image_data` was returning a plain Python `dict` with `"image_data": "<base64>"`. FastMCP serialized this as a `TextContent` JSON blob — the MCP wire format never contained an `ImageContent` block. Vision LLMs (including Claude Desktop) never received an actual image.
+
+**Root cause**: Two-layer blockage:
+1. **Protocol bug (our code)**: Returning a dict → FastMCP emits `TextContent`, not `ImageContent`
+2. **LM Studio limitation (external)**: Even with a correct `ImageContent` block, LM Studio's MCP client does not pass tool-result image content to the LLM's vision encoder (known community-reported issue)
+
+**Fix applied**:
+- Added `from fastmcp.utilities.types import Image as FastMCPImage` import
+- `preview_get_image_data` now returns `FastMCPImage(data=jpeg_bytes, format="jpeg")`
+- This produces a proper `{"type": "image", "data": "<base64>", "mimeType": "image/jpeg"}` MCP `ImageContent` block
+- Return type annotation updated to `Union[FastMCPImage, Dict[str, Any]]`
+- Docstring updated to document the correct return type and the LM Studio limitation workaround
+
+**FastMCP version**: 2.14.3 (installed); 3.2.4 is latest — upgrade is optional, not required for this fix
+
+**LM Studio workaround**: Use `preview_generate` (saves to disk) or call the LM Studio API directly with `image_url` content block. LM Studio's MCP client limitation is external and cannot be fixed server-side.
+
+---
+
 ### April 2026 - Socket Architecture Fix (kmanley1 contribution)
 
 **Critical bug fixed**: The original dual-socket architecture had a fatal flaw — Lightroom's `LrSocket` in `mode="send"` has a **10-second idle timeout**. After Lightroom sent the `connection.established` event, the sender socket would go idle and Lightroom would close it. Python's `_receive_loop` would get EOF and set `_connected = False`. Commands were still sent (write socket stayed alive) but responses never arrived, causing 30-second timeouts on every call.
@@ -82,7 +103,7 @@ Also added pagination to `catalog_get_keywords` (limit/offset/include_counts par
   - Calibration (camera-specific color adjustments)
   - Parameter management (get/set/reset, batch operations)
   - Helper tools (auto tone, styles, suggestions)
-- ✅ **Preview** (4 tools): Generate with multiple sizes, comparison previews, batch generation
+- ✅ **Preview** (5 tools): Generate with multiple sizes, comparison previews, batch generation, inline image data for sandboxed LLMs
 - ✅ **Histogram** (3 tools): RGB, luminance, full analysis with clipping detection
 
 ### Key Optimizations

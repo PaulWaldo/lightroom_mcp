@@ -1,0 +1,57 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write        # allows test-reporter to post check results
+      pull-requests: write # allows test-reporter to comment on PRs
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/python \
+            -m "not integration" \
+            --tb=short \
+            --junit-xml=test-results.xml \
+            --cov=mcp_server \
+            --cov=lightroom_sdk \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v3.0.0
+        if: always()
+        with:
+          name: Pytest Results
+          path: test-results.xml
+          reporter: java-junit
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v6.0.1
+        if: always()
+        with:
+          files: coverage.xml
+          # No token needed — Codecov works without one for public repos.
+          # For private repos, add CODECOV_TOKEN to repo secrets and uncomment:
+          # token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false

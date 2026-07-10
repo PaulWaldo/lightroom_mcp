@@ -1,6 +1,102 @@
 # Progress
 
+## July 2026 - Tool-Definition Token Budget Baseline & Slimming Strategy Exploration 🔄
+
+**Date**: July 10, 2026
+
+**Context**: User's primary current use case is **AI vision-based photo tagging**
+(generate keywords, descriptions, titles from image analysis) — **not** develop/editing.
+Wanted to understand the token cost of loading this MCP server's tool definitions
+into an LLM's context, and explore ways to reduce it.
+
+**Baseline measurement** (via FastMCP's own `get_tools()` registry + `tiktoken`
+cl100k_base encoding — see `tmp_token_estimate.py` at repo root, kept as a reusable
+benchmark script):
+
+| Metric | Value |
+|---|---|
+| Total tools | 147 |
+| Total characters (name+description+inputSchema JSON) | 53,631 |
+| Total tokens (cl100k_base) | **13,825** |
+| Avg chars/token | 3.88 |
+
+**Breakdown by category prefix**:
+
+| Category | Tools | Tokens |
+|---|---|---|
+| `develop_*` | 111 | 7,624 |
+| `catalog_*` | 20 | 2,956 |
+| `preview_*` | 7 | 2,678 |
+| `histogram_*` | 3 | 274 |
+| `system_*` | 4 | 197 |
+| `list_capabilities`/`get_quick_start_guide` | 2 | 96 |
+
+**Heaviest individual tools** (verbose docstrings, mostly `preview.py`'s gateway-warning
+prose): `preview_get_image_data` (726 tok), `preview_get_image_data_as_text` (507 tok),
+`preview_generate` (506 tok), `preview_generate_current` (327 tok),
+`preview_generate_comparison` (324 tok), `catalog_search_photos` (317 tok).
+
+**Key finding**: Since the user does not currently use `develop_*` at all, **55% of the
+token cost (7,624 of 13,825 tokens) is being paid every session for zero benefit** in
+their actual workflow. This is a bigger, lower-risk win than any tool-consolidation or
+docstring-trimming strategy.
+
+**Important unresolved technical point — per-turn token cost, not just session-start**:
+LLM chat APIs are stateless per call; the full tool-definition schema is normally
+re-transmitted as input tokens on *every* turn of a conversation, not just once at
+startup, unless the provider/client has active prompt-caching for the static prefix.
+Whether that applies to the user's setup (Cline + various providers, LM Studio) was
+not yet confirmed — this materially changes the ROI of schema-shrinking work and needs
+verification before further token-optimization work is prioritized.
+
+**Strategies discussed (not yet implemented)**:
+1. **Consolidate `develop_*` single-slider tools** into the existing generic
+   `develop_set_parameter`, keeping only a handful of "hero" tools — biggest lever if
+   develop is heavily used.
+2. **Trim verbose `preview_*` docstrings** (keep a 1-line warning inline, move detailed
+   gateway-interception prose to docs) — moderate savings, low risk.
+3. **Progressive disclosure** (thin `list_tools` + on-demand `get_tool_details`) —
+   evaluated adversarially and **deferred**: real MCP protocol has no native
+   partial-schema mechanism, risk of LLMs guessing wrong parameter values against a
+   live Lightroom catalog, and doesn't clearly win once per-turn resend cost of fetched
+   details is considered.
+4. **Split tool surface by workflow** (catalog/tagging vs. develop/editing) — strongly
+   preferred by user given confirmed workflow split. Two sub-strategies considered:
+   - Single process + env var toggle (`LIGHTROOM_MCP_MODULES`) — safe, but requires
+     server restart to switch modules mid-conversation.
+   - Two separate MCP server configs, toggled live via the LLM harness's native
+     enable/disable — matches user's desired UX (switch mindset mid-conversation)
+     but is **blocked on verifying**: (a) whether the harness's "disable server"
+     actually kills the subprocess (freeing the port) or just hides tools from
+     context while leaving the process alive, and (b) confirming the fixed-port
+     constraint below doesn't cause a silent failure if both are ever live at once.
+
+**Architectural constraint discovered** (relevant to any multi-process design):
+the Lightroom bridge uses a **hardcoded HTTP callback port (54400)** in
+`lightroom_sdk/socket_bridge.py` (`CALLBACK_PORT = 54400`) plus a single shared
+port file (`~/lightroom_ports.txt`) for the command socket. The current design is
+strictly 1:1 (one Python process ↔ one Lightroom connection) — two Python
+processes running simultaneously would collide on the `HTTPServer` bind or the
+port file. This has been documented in `techContext.md` as a hard constraint on
+any future "split into separate MCP servers" work. See "Known Issues" below for
+follow-up items.
+
+**Status**: Investigation paused before implementation to checkpoint findings in
+memory bank. No code changes made yet. **Temporary script `tmp_token_estimate.py`
+intentionally kept** (not cleaned up) at user's request, to serve as the benchmark
+harness for measuring before/after effects of whatever slimming strategy is chosen.
+
+**Next steps** (see `activeContext.md`):
+1. Verify whether Cline's/LM Studio's MCP enable/disable UI stops the subprocess.
+2. Verify whether prompt caching is active for the user's typical model/provider setup.
+3. Decide on and implement the chosen strategy (most likely: module toggle, defaulting
+   to `develop_*` disabled, given confirmed non-use).
+4. Re-run `tmp_token_estimate.py` and record before/after numbers here.
+
+---
+
 ## July 2026 - preview_get_image_data_as_text Fallback + Gateway Interception Diagnosis ✅
+
 
 **Date**: July 3, 2026
 

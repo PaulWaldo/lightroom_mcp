@@ -2,16 +2,66 @@
 
 ## Current Work Focus
 
-The Lightroom Classic MCP Server is **operational and feature-complete** with 75+ MCP tools covering all major Lightroom catalog and develop operations. Current focus areas include:
+The Lightroom Classic MCP Server is **operational and feature-complete** with 147 MCP tools covering all major Lightroom catalog and develop operations. Current focus areas include:
 
-1. **Architecture Stability** - New single-socket + HTTP callback architecture (merged from kmanley1/windows-compat)
-2. **Catalog Enhancements** - New keyword and metadata batch tools added
-3. **Documentation** - Maintaining clear API references and usage examples
-4. **Windows Compatibility** - MessageProtocol backslash escaping fix applied
+1. **Tool-Definition Token Budget** (🔄 in progress, see below) - Reducing the ~13,825-token
+   cost of loading all tool schemas, given the user's primary workflow (AI photo tagging)
+   doesn't use `develop_*` at all
+2. **Architecture Stability** - New single-socket + HTTP callback architecture (merged from kmanley1/windows-compat)
+3. **Catalog Enhancements** - New keyword and metadata batch tools added
+4. **Documentation** - Maintaining clear API references and usage examples
+5. **Windows Compatibility** - MessageProtocol backslash escaping fix applied
 
 ## Recent Changes & Implementations
 
+### July 2026 (in progress) - Tool-Definition Token Budget Investigation
+
+**Status**: 🔄 Paused mid-investigation to checkpoint findings (see `progress.md` for full
+detail). No code changes made yet.
+
+**Baseline established**: 147 tools → 13,825 tokens (cl100k_base) to load all tool
+schemas. `develop_*` alone accounts for 7,624 tokens (55%) across 111 tools, but the
+user's confirmed current workflow (AI vision tagging: keywords/captions/titles) does
+not use `develop_*` at all — making it the single biggest safe-to-cut cost.
+
+**Benchmark script**: `tmp_token_estimate.py` (repo root) — uses
+`main_server.get_tools()` + `tiktoken` to measure exact token cost per tool and by
+category. Intentionally kept (not a throwaway) as the standard tool for measuring
+before/after effects of any slimming change going forward.
+
+**Decision blockers before implementing** (next session should start here):
+1. **Does Cline's/LM Studio's "disable MCP server" UI actually terminate the
+   subprocess**, or does it just hide the tools from context while the process (and
+   its socket/port bindings) stays alive? This determines whether a "two separate
+   MCP server configs, toggle live mid-conversation" design (user's preferred UX) is
+   safe, or whether a single-process env-var toggle (requires restart, but provably
+   safe) is the fallback.
+2. **Is prompt caching active** for the user's typical provider/client combo? If tool
+   schemas are cached after turn 1, the ROI of shrinking schema *size* drops sharply
+   (the cost becomes ~one-time rather than per-turn), shifting priority toward
+   *module toggling* (fewer tools loaded at all) over docstring-trimming/consolidation.
+3. Given the answers above, decide between: (a) env-var module toggle in `main.py`
+   defaulting to `catalog+preview` with `develop` off, (b) two separate server entry
+   points/configs for live harness-level toggling, or (c) both.
+
+**New constraint documented**: the Lightroom bridge hardcodes HTTP callback port
+**54400** (`lightroom_sdk/socket_bridge.py::CALLBACK_PORT`) and a single shared port
+file (`~/lightroom_ports.txt`). This is a strict 1:1 process-to-connection design —
+running two Python MCP server processes against the same Lightroom instance
+simultaneously would likely collide (second process's `HTTPServer.bind` fails, or a
+port-file race). Documented in `techContext.md`. Any multi-server-config design must
+either avoid true concurrency or add defensive error handling for the collision case.
+
+**Strategies evaluated but deprioritized**:
+- Progressive disclosure (thin `list_tools` + on-demand detail lookup) — adversarial
+  review found real risk (LLM guesses wrong parameter ranges against a live catalog)
+  and unclear ROI once per-turn resend of fetched details is accounted for. Deferred
+  unless module-toggle + docstring-trimming prove insufficient.
+
+---
+
 ### July 2026 - Diagnosed Gateway Interception of ImageContent (Open WebUI) + Text-Channel Fallback
+
 
 **Problem reported**: An LLM (`qwen/qwen3.5-9b`) calling `preview_get_image_data` completely
 failed to see the photo. The raw tool result the LLM received was:

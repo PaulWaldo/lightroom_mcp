@@ -101,6 +101,17 @@ Memory Bank updates occur when:
 2. After implementing significant changes
 3. When user requests with **update memory bank** (MUST review ALL files)
 4. When context needs clarification
+5. **Proactively, at natural pause points during long exploratory/planning
+   sessions** — even without file edits or an explicit user request. If a
+   conversation spans many turns of investigation, back-and-forth design
+   discussion, or tangents (e.g., evaluating multiple candidate strategies,
+   discovering an architectural constraint, resolving a sub-question) before
+   any code change is made, checkpoint the findings-so-far into `progress.md`
+   and/or `activeContext.md` at the next reasonable pause rather than waiting
+   until the user asks or the task concludes. Memory resets between sessions
+   mean any unrecorded findings from a long tangent are at risk of being lost
+   if the session ends unexpectedly.
+
 
 flowchart TD
     Start[Update Process]

@@ -10,6 +10,10 @@ This module provides two distinct categories of preview tools:
   preview_get_image_data  — Returns an MCP ImageContent block; vision-capable
                             clients (Claude Desktop, Continue, etc.) render the
                             image directly.  The response is NOT a file path.
+  preview_get_image_data_as_text — Fallback for gateways/proxies that intercept
+                            ImageContent blocks (e.g. Open WebUI). Returns the
+                            same image as a base64 data URI inside a
+                            TextContent block instead.
 
 **TEXT/FILE tools (return file paths or metadata)**
   preview_generate            — Saves JPEG to disk, returns the file path as text
@@ -47,6 +51,7 @@ import tempfile
 import time
 from PIL import Image
 from fastmcp.utilities.types import Image as FastMCPImage
+from mcp.types import TextContent
 import io
 import numpy as np
 
@@ -556,6 +561,19 @@ class PreviewServer(LightroomServerModule):
 
             If you are unsure whether you have filesystem access, use this tool.
 
+            GATEWAY WARNING: Some MCP clients/gateways (e.g. Open WebUI and
+            similar proxies) do NOT pass the raw image bytes through to the
+            model. Instead they intercept the ImageContent block, save it to
+            their OWN local file store, and hand you back a JSON stub like:
+            {"type": "image", "fileName": "image-....jpg", "mimeType":
+            "image/jpeg", "markdown": "![Image](./image-....jpg)", "$hint": "..."}.
+            If you see "fileName", "markdown", or "$hint" fields instead of a
+            long base64 "data" string, you did NOT receive the image and
+            cannot see it — do not guess its contents. Tell the user your
+            client intercepted the image, then try
+            preview_get_image_data_as_text as a fallback, or ask the user to
+            use preview_generate (saves a file to disk) instead.
+
             To keep the response size manageable for smaller context windows:
             - Use size="small" (640px, ~30–80 KB base64) for quick checks
             - Use size="medium" (1080px, ~200–500 KB base64) for normal editing review
@@ -626,6 +644,101 @@ class PreviewServer(LightroomServerModule):
 
             except Exception as e:
                 logger.error(f"Preview image data generation failed: {e}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "hint": "Ensure a photo is selected in Lightroom",
+                }
+
+        @self.server.tool
+        async def preview_get_image_data_as_text(
+            photo_id: Optional[str] = None,
+            size: str = "small",
+            quality: Optional[int] = None,
+        ) -> Union[TextContent, Dict[str, Any]]:
+            """
+            Generate a JPEG preview and return it as a base64 data URI wrapped in
+            a TEXT content block (fallback for gateways that mangle ImageContent).
+
+            USE THIS TOOL ONLY AS A FALLBACK, after preview_get_image_data has
+            failed. Some MCP clients/gateways (e.g. Open WebUI and similar
+            proxies) intercept MCP ImageContent blocks and replace them with a
+            local file reference the model cannot access (see the warning in
+            preview_get_image_data's docstring for exactly what that looks
+            like). Because those gateways typically only transform
+            ImageContent, not TextContent, this tool sends the same image
+            bytes through the TEXT channel instead, as a
+            "data:image/jpeg;base64,..." URI. Whether your specific model can
+            actually interpret a base64 data URI embedded in text depends on
+            the model/client — this is a best-effort workaround, not a
+            guarantee.
+
+            This produces a MUCH larger text response than the equivalent
+            ImageContent block (base64 text expands token count significantly),
+            so prefer size="small" and a low quality here.
+
+            Args:
+                photo_id: Photo ID (uses current selection if not provided)
+                size: Preview size (maintains aspect ratio). Default "small"
+                      (640px) to limit token usage — this tool is expensive.
+                      - "small": 640px longest edge, quality 50 (recommended)
+                      - "medium": 1080px longest edge, quality 90
+                      - "large": 1440px longest edge, quality 90
+                      - "full": original resolution, quality 90
+                quality: Optional JPEG quality override (1-100). Lower values
+                         reduce response size significantly — recommended.
+
+            Returns:
+                MCP TextContent block whose text is a base64 data URI:
+                    "data:image/jpeg;base64,/9j/4AAQ..."
+                On error, returns a JSON error dict instead.
+            """
+            if not photo_id:
+                try:
+                    selected = await self.execute_command(
+                        "catalog.getSelectedPhotos", {}
+                    )
+                    if selected.get("count", 0) == 0:
+                        return {
+                            "success": False,
+                            "error": "No photo selected in Lightroom",
+                            "hint": "Please select a photo or provide photo_id parameter",
+                        }
+                    photo_id = str(selected["photos"][0]["id"])
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "error": f"Failed to get selected photo: {e}",
+                    }
+
+            if quality is None:
+                quality_defaults = {"small": 50, "medium": 90, "large": 90, "full": 90}
+                quality = quality_defaults.get(size, 90)
+
+            try:
+                full_data, info = await self._fetch_preview_data(
+                    photo_id, size, quality
+                )
+                jpeg_bytes, actual_width, actual_height = self._process_preview_data(
+                    full_data, size, quality
+                )
+
+                b64_data = base64.b64encode(jpeg_bytes).decode("ascii")
+                data_uri = f"data:image/jpeg;base64,{b64_data}"
+
+                logger.info(
+                    f"Returning image data as text/data-URI: photo={info.get('photoId', photo_id)}, "
+                    f"{actual_width}x{actual_height}, {len(jpeg_bytes)} bytes, "
+                    f"{len(data_uri)} chars, quality={quality}"
+                )
+
+                # Send through the TEXT content channel rather than ImageContent
+                # so gateways that only intercept/transform ImageContent blocks
+                # pass this through unmodified.
+                return TextContent(type="text", text=data_uri)
+
+            except Exception as e:
+                logger.error(f"Preview image data (text) generation failed: {e}")
                 return {
                     "success": False,
                     "error": str(e),

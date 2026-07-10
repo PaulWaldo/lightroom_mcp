@@ -118,10 +118,15 @@ Add to your MCP configuration in LM Studio:
 }
 ```
 
-> **Note**: LM Studio's MCP client does not currently pass `ImageContent` tool results to the
-> LLM's vision encoder. The `preview_get_image_data` tool will return an image content block
-> that LM Studio cannot display. As a workaround, use `preview_generate` instead — it saves
-> the preview to disk and returns the file path, which you can open manually.
+> **Note**: Some MCP clients/gateways (e.g. LM Studio, Open WebUI, and other proxies)
+> do not pass `ImageContent` tool results through to the LLM's vision encoder — some
+> simply drop it, others intercept it and replace it with a local file reference the
+> model cannot access. The `preview_get_image_data` tool will return an image content
+> block that these clients cannot display; the docstring explains how to detect this
+> case. As a workaround, try `preview_get_image_data_as_text` (sends the image as a
+> base64 data URI through the text channel, which most gateways don't intercept), or
+> use `preview_generate` instead — it saves the preview to disk and returns the file
+> path, which you can open manually.
 
 ## Sample Prompts
 
@@ -159,7 +164,7 @@ Add to your MCP configuration in LM Studio:
 
 **Develop** (49 tools): All basic adjustments (exposure, contrast, etc.), tone curves, HSL/color, detail, lens corrections, effects, calibration, masking
 
-**Preview** (6 tools): Generate optimized JPEGs with automatic PIL-based resizing; `preview_get_image_data` returns a proper MCP `ImageContent` block for vision-capable LLMs
+**Preview** (7 tools): Generate optimized JPEGs with automatic PIL-based resizing; `preview_get_image_data` returns a proper MCP `ImageContent` block for vision-capable LLMs; `preview_get_image_data_as_text` is a fallback that sends the image as a base64 data URI through the text channel for clients/gateways that intercept `ImageContent`
 
 **Histogram** (3 tools): RGB, luminance, and full spectrum analysis
 

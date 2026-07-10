@@ -1,5 +1,38 @@
 # Progress
 
+## July 2026 - preview_get_image_data_as_text Fallback + Gateway Interception Diagnosis ✅
+
+**Date**: July 3, 2026
+
+**Problem**: A user reported `preview_get_image_data` "completely fails" — an LLM
+(`qwen/qwen3.5-9b`) received a JSON stub instead of an image:
+`{"type":"image","fileName":"...","markdown":"![Image](./....jpg)","$hint":"..."}`.
+No `data` field present — not a valid MCP `ImageContent` block.
+
+**Root cause**: Confirmed by reading `fastmcp/tools/tool.py` and
+`fastmcp/utilities/types.py` that our server code correctly emits a proper
+`ImageContent` block via `FastMCPImage(data=jpeg_bytes, format="jpeg")`. The failure
+occurs downstream: a gateway/proxy (Open WebUI or similar) between the MCP server
+and the LLM intercepts `ImageContent` blocks and replaces them with its own
+file-reference stub, which the LLM cannot resolve. No file was written by our server
+in this flow.
+
+**Fix (mitigation, since root cause is external)**:
+- `preview_get_image_data` docstring: added explicit "GATEWAY WARNING" describing the
+  stub shape to recognize, instructing the LLM not to guess/hallucinate when it sees one
+- New tool **`preview_get_image_data_as_text`**: sends the same JPEG as a
+  `data:image/jpeg;base64,...` URI inside a `TextContent` block, since gateways that
+  transform `ImageContent` typically leave `TextContent` alone. Defaults to
+  `size="small"` due to token cost of embedding base64 in text.
+- Updated `main.py` tool count (preview: 4→7), module docstring, and `README.md`
+
+**Files Modified**: `mcp_server/servers/preview.py`, `mcp_server/main.py`, `README.md`
+
+**Verification**: `uv run python -c "from mcp_server.main import main_server..."` loads
+cleanly; full test suite (92 tests) passes with no regressions.
+
+---
+
 ## April 2026 - preview_get_image_data ImageContent Fix ✅
 
 **Date**: April 24, 2026

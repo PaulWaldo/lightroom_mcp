@@ -11,6 +11,51 @@ The Lightroom Classic MCP Server is **operational and feature-complete** with 75
 
 ## Recent Changes & Implementations
 
+### July 2026 - Diagnosed Gateway Interception of ImageContent (Open WebUI) + Text-Channel Fallback
+
+**Problem reported**: An LLM (`qwen/qwen3.5-9b`) calling `preview_get_image_data` completely
+failed to see the photo. The raw tool result the LLM received was:
+```json
+[{"type":"image","fileName":"image-....jpg","mimeType":"image/jpeg",
+  "markdown":"![Image](./image-....jpg)","$hint":"..."}]
+```
+This is NOT a valid MCP `ImageContent` block (no `data` field) — it's Open WebUI's (or a
+similar gateway's) own file-upload wrapper format.
+
+**Root cause**: The MCP server code was already correct — `preview_get_image_data` returns
+`FastMCPImage(data=jpeg_bytes, format="jpeg")`, which FastMCP converts to a proper
+`{"type": "image", "data": "<base64>", "mimeType": "image/jpeg"}` `ImageContent` block (verified
+by reading `fastmcp/tools/tool.py::_convert_to_single_content_block` and
+`fastmcp/utilities/types.py::Image.to_image_content`). The failure happens **downstream**: a
+gateway sitting between the MCP server and the LLM intercepts the `ImageContent` block, saves
+the image to its own local file store, and replaces it with a JSON stub containing a relative
+file path the LLM cannot fetch. No preview file is created by our server in this flow — the
+"file" referenced in the stub lives on the gateway's own storage, not something our code wrote.
+
+**Fix applied** (no bug in our transport/protocol code, so this is a mitigation, not a root fix):
+1. Added `preview_get_image_data`'s docstring: explicit "GATEWAY WARNING" section showing the
+   exact stub shape to watch for (`fileName`, `markdown`, `$hint` fields instead of `data`), and
+   instructing the LLM not to hallucinate a description when it sees this.
+2. Added a brand new tool: **`preview_get_image_data_as_text`** — sends the same JPEG bytes as a
+   `data:image/jpeg;base64,...` URI wrapped in a `TextContent` block instead of `ImageContent`.
+   Rationale: gateways that specifically transform `ImageContent` blocks typically leave
+   `TextContent` untouched, so this is a plausible (best-effort, not guaranteed) workaround.
+   Defaults to `size="small"` since base64-in-text inflates token count significantly.
+3. Updated module header docstring, `main.py::list_capabilities` tool count (4→7), and
+   `README.md` (LM Studio note broadened to cover Open WebUI/gateways generally, tool count
+   updated 6→7).
+
+**Files Modified**: `mcp_server/servers/preview.py`, `mcp_server/main.py`, `README.md`,
+memory bank docs
+
+**Tooling note**: During this session, `replace_in_file` reported success on a docstring edit
+that did not actually persist to disk (confirmed via `git diff`) on the first attempt; a second
+identical-content `replace_in_file` call on the same SEARCH block succeeded. If a tool reports
+success but `git diff`/`git status` shows no change, retry the same edit once before assuming
+the code is correct.
+
+---
+
 ### April 2026 - preview_get_image_data: Proper MCP ImageContent Block
 
 **Problem**: `preview_get_image_data` was returning a plain Python `dict` with `"image_data": "<base64>"`. FastMCP serialized this as a `TextContent` JSON blob — the MCP wire format never contained an `ImageContent` block. Vision LLMs (including Claude Desktop) never received an actual image.

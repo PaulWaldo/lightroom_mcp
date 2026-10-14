@@ -90,13 +90,6 @@ function PreviewModule.generatePreview(params, callback)
                 return
             end
 
-            local progressScope = LrProgressScope({
-            title = "Generating Preview",
-            caption = "Preparing preview generation..."
-        })
-
-        progressScope:setPortionComplete(0.1)
-
             -- Determine the size requested from requestJpegThumbnail. Lightroom
             -- treats this as a minimum, not a cap: it preserves aspect ratio but
             -- may return a larger image (e.g. 720px or 750px for a 640px request,
@@ -129,6 +122,14 @@ function PreviewModule.generatePreview(params, callback)
                 return
             end
 
+            -- Created after size validation so an invalid size never leaves an
+            -- orphaned progress bar; every later early return must call done().
+            local progressScope = LrProgressScope({
+                title = "Generating Preview",
+                caption = "Preparing preview generation..."
+            })
+
+            progressScope:setPortionComplete(0.1)
             progressScope:setCaption("Generating " .. pixelSize .. "px preview...")
             progressScope:setPortionComplete(0.3)
 
@@ -153,6 +154,7 @@ function PreviewModule.generatePreview(params, callback)
                 LrTasks.sleep(0.1)
                 if progressScope:isCanceled() then
                     logger:info("Preview generation cancelled by user")
+                    progressScope:done()
                     callback({
                         error = {
                             code = "CANCELLED",
@@ -164,6 +166,7 @@ function PreviewModule.generatePreview(params, callback)
             end
 
             if previewError then
+                progressScope:done()
                 callback({
                     error = {
                         code = "GENERATION_FAILED",
@@ -174,6 +177,7 @@ function PreviewModule.generatePreview(params, callback)
             end
 
             if not jpegData then
+                progressScope:done()
                 callback({
                     error = {
                         code = "NO_DATA",

@@ -75,7 +75,7 @@ async def list_capabilities() -> Dict[str, Any]:
             },
             "preview": {
                 "description": "Preview generation",
-                "tool_count": 4,
+                "tool_count": 7,
                 "prefix": "preview_",
                 "status": "Active"
             }

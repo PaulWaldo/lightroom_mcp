@@ -2,14 +2,109 @@
 
 ## Current Work Focus
 
-The Lightroom Classic MCP Server is **operational and feature-complete** with 75+ MCP tools covering all major Lightroom catalog and develop operations. Current focus areas include:
+The Lightroom Classic MCP Server is **operational and feature-complete** with 147 MCP tools covering all major Lightroom catalog and develop operations. Current focus areas include:
 
-1. **Architecture Stability** - New single-socket + HTTP callback architecture (merged from kmanley1/windows-compat)
-2. **Catalog Enhancements** - New keyword and metadata batch tools added
-3. **Documentation** - Maintaining clear API references and usage examples
-4. **Windows Compatibility** - MessageProtocol backslash escaping fix applied
+1. **Tool-Definition Token Budget** (🔄 in progress, see below) - Reducing the ~13,825-token
+   cost of loading all tool schemas, given the user's primary workflow (AI photo tagging)
+   doesn't use `develop_*` at all
+2. **Architecture Stability** - New single-socket + HTTP callback architecture (merged from kmanley1/windows-compat)
+3. **Catalog Enhancements** - New keyword and metadata batch tools added
+4. **Documentation** - Maintaining clear API references and usage examples
+5. **Windows Compatibility** - MessageProtocol backslash escaping fix applied
 
 ## Recent Changes & Implementations
+
+### July 2026 (in progress) - Tool-Definition Token Budget Investigation
+
+**Status**: 🔄 Paused mid-investigation to checkpoint findings (see `progress.md` for full
+detail). No code changes made yet.
+
+**Baseline established**: 147 tools → 13,825 tokens (cl100k_base) to load all tool
+schemas. `develop_*` alone accounts for 7,624 tokens (55%) across 111 tools, but the
+user's confirmed current workflow (AI vision tagging: keywords/captions/titles) does
+not use `develop_*` at all — making it the single biggest safe-to-cut cost.
+
+**Benchmark script**: `tmp_token_estimate.py` (repo root) — uses
+`main_server.get_tools()` + `tiktoken` to measure exact token cost per tool and by
+category. Intentionally kept (not a throwaway) as the standard tool for measuring
+before/after effects of any slimming change going forward.
+
+**Decision blockers before implementing** (next session should start here):
+1. **Does Cline's/LM Studio's "disable MCP server" UI actually terminate the
+   subprocess**, or does it just hide the tools from context while the process (and
+   its socket/port bindings) stays alive? This determines whether a "two separate
+   MCP server configs, toggle live mid-conversation" design (user's preferred UX) is
+   safe, or whether a single-process env-var toggle (requires restart, but provably
+   safe) is the fallback.
+2. **Is prompt caching active** for the user's typical provider/client combo? If tool
+   schemas are cached after turn 1, the ROI of shrinking schema *size* drops sharply
+   (the cost becomes ~one-time rather than per-turn), shifting priority toward
+   *module toggling* (fewer tools loaded at all) over docstring-trimming/consolidation.
+3. Given the answers above, decide between: (a) env-var module toggle in `main.py`
+   defaulting to `catalog+preview` with `develop` off, (b) two separate server entry
+   points/configs for live harness-level toggling, or (c) both.
+
+**New constraint documented**: the Lightroom bridge hardcodes HTTP callback port
+**54400** (`lightroom_sdk/socket_bridge.py::CALLBACK_PORT`) and a single shared port
+file (`~/lightroom_ports.txt`). This is a strict 1:1 process-to-connection design —
+running two Python MCP server processes against the same Lightroom instance
+simultaneously would likely collide (second process's `HTTPServer.bind` fails, or a
+port-file race). Documented in `techContext.md`. Any multi-server-config design must
+either avoid true concurrency or add defensive error handling for the collision case.
+
+**Strategies evaluated but deprioritized**:
+- Progressive disclosure (thin `list_tools` + on-demand detail lookup) — adversarial
+  review found real risk (LLM guesses wrong parameter ranges against a live catalog)
+  and unclear ROI once per-turn resend of fetched details is accounted for. Deferred
+  unless module-toggle + docstring-trimming prove insufficient.
+
+---
+
+### July 2026 - Diagnosed Gateway Interception of ImageContent (Open WebUI) + Text-Channel Fallback
+
+
+**Problem reported**: An LLM (`qwen/qwen3.5-9b`) calling `preview_get_image_data` completely
+failed to see the photo. The raw tool result the LLM received was:
+```json
+[{"type":"image","fileName":"image-....jpg","mimeType":"image/jpeg",
+  "markdown":"![Image](./image-....jpg)","$hint":"..."}]
+```
+This is NOT a valid MCP `ImageContent` block (no `data` field) — it's Open WebUI's (or a
+similar gateway's) own file-upload wrapper format.
+
+**Root cause**: The MCP server code was already correct — `preview_get_image_data` returns
+`FastMCPImage(data=jpeg_bytes, format="jpeg")`, which FastMCP converts to a proper
+`{"type": "image", "data": "<base64>", "mimeType": "image/jpeg"}` `ImageContent` block (verified
+by reading `fastmcp/tools/tool.py::_convert_to_single_content_block` and
+`fastmcp/utilities/types.py::Image.to_image_content`). The failure happens **downstream**: a
+gateway sitting between the MCP server and the LLM intercepts the `ImageContent` block, saves
+the image to its own local file store, and replaces it with a JSON stub containing a relative
+file path the LLM cannot fetch. No preview file is created by our server in this flow — the
+"file" referenced in the stub lives on the gateway's own storage, not something our code wrote.
+
+**Fix applied** (no bug in our transport/protocol code, so this is a mitigation, not a root fix):
+1. Added `preview_get_image_data`'s docstring: explicit "GATEWAY WARNING" section showing the
+   exact stub shape to watch for (`fileName`, `markdown`, `$hint` fields instead of `data`), and
+   instructing the LLM not to hallucinate a description when it sees this.
+2. Added a brand new tool: **`preview_get_image_data_as_text`** — sends the same JPEG bytes as a
+   `data:image/jpeg;base64,...` URI wrapped in a `TextContent` block instead of `ImageContent`.
+   Rationale: gateways that specifically transform `ImageContent` blocks typically leave
+   `TextContent` untouched, so this is a plausible (best-effort, not guaranteed) workaround.
+   Defaults to `size="small"` since base64-in-text inflates token count significantly.
+3. Updated module header docstring, `main.py::list_capabilities` tool count (4→7), and
+   `README.md` (LM Studio note broadened to cover Open WebUI/gateways generally, tool count
+   updated 6→7).
+
+**Files Modified**: `mcp_server/servers/preview.py`, `mcp_server/main.py`, `README.md`,
+memory bank docs
+
+**Tooling note**: During this session, `replace_in_file` reported success on a docstring edit
+that did not actually persist to disk (confirmed via `git diff`) on the first attempt; a second
+identical-content `replace_in_file` call on the same SEARCH block succeeded. If a tool reports
+success but `git diff`/`git status` shows no change, retry the same edit once before assuming
+the code is correct.
+
+---
 
 ### April 2026 - preview_get_image_data: Proper MCP ImageContent Block
 

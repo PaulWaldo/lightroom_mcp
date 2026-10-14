@@ -16,9 +16,14 @@
 - **LrTasks**: Asynchronous task management
 
 ### Development Tools
-- **uv**: Python package manager (optional)
+- **uv**: Python package manager — **preferred/default**. Always use `uv add`
+  (or `uv add --dev <pkg>` for dev-only tools) to add Python dependencies to this
+  project rather than `pip install`, since `uv.lock` is the source of truth for
+  dependency resolution here. Only fall back to `pip` if the user explicitly asks
+  for it.
 - **pytest**: Testing framework
 - **Git**: Version control
+
 
 ## Project Structure
 
@@ -212,6 +217,35 @@ end)
 **5. Temperature/Tint Compatibility**:
 - Must be set individually (not in batch)
 - Special handling required for these parameters
+
+**6. Fixed HTTP Callback Port — 1:1 Process Constraint** (discovered July 2026):
+```python
+# lightroom_sdk/socket_bridge.py
+CALLBACK_PORT = 54400  # Hardcoded, not configurable
+```
+- Each Python MCP server process binds its own `HTTPServer` to `localhost:54400`
+  to receive response callbacks from Lightroom (`LrHttp.post`), and reads a single
+  shared port file (`~/lightroom_ports.txt`) to find Lightroom's command socket.
+- **This is a strict 1:1 design**: exactly one Python process can hold the
+  connection to a given Lightroom instance at a time. Running two Python MCP
+  server processes simultaneously (e.g. two separate MCP server configs, both
+  enabled at once in an LLM harness) will collide — the second process's
+  `HTTPServer.bind(('localhost', 54400))` call will raise `OSError: Address
+  already in use`, or both processes may race to read/act on the same port file.
+- **Implication for future work**: any design that splits tools across multiple
+  MCP server *processes* (e.g. a "catalog server" + "develop server" as separate
+  config entries, intended to be toggled on/off independently) must either (a)
+  guarantee only one is ever running at a time, or (b) add defensive handling for
+  the bind collision, or (c) make the callback port and port-file path
+  per-process-configurable (bigger change, not yet implemented). A single-process
+  design with conditional tool mounting (e.g. an env var read once at startup) does
+  not have this risk, since only one process/port ever exists regardless of which
+  tool modules are mounted.
+- **Not yet verified**: whether MCP clients' "disable server" UI (e.g. Cline,
+  LM Studio) actually terminates the underlying subprocess (freeing the port) or
+  merely hides its tools from the LLM's context while leaving the process running.
+  This directly affects whether a multi-server-config design is safe in practice.
+
 
 ### Python Constraints
 

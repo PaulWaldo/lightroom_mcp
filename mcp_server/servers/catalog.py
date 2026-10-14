@@ -27,8 +27,6 @@ class CatalogServer(LightroomServerModule):
             """
             Get currently selected photos in Lightroom.
 
-            Essential for AI agents to know which photo(s) they're working on.
-
             Returns:
                 Selected photos with metadata
             """

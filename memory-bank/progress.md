@@ -1,5 +1,224 @@
 # Progress
 
+## July 2026 - Fixed docstring bug + preview "full" size bug (discovered mid-slimming) ✅
+
+**Date**: July 12, 2026
+
+**Context**: While slimming `develop/*.py` factory-generated tool docstrings (see token
+budget work below), discovered and fixed two unrelated but real bugs:
+
+**Bug 1 — f-string docstrings never worked.** All 6 factory functions across
+`develop/basic_tools.py`, `calibration_tools.py`, `color_tools.py`, `detail_tools.py`,
+`lens_tools.py`, and `tone_curves.py` used an f-string as the first statement inside
+the dynamically-created tool function, e.g.:
+```python
+async def hsl_tool(value: float) -> Dict[str, Any]:
+    f"""Adjust {adjustment} for {color} colors..."""
+    ...
+```
+An f-string is **not** a plain string literal, so Python does not capture it as
+`__doc__` — it silently evaluates and discards the string. This meant every one of the
+~90 factory-generated `develop_adjust_*` tools (HSL, calibration, detail, lens,
+parametric tone curve, and basic adjustment tools) had **no description at all** in
+their MCP tool schema. Fixed by building the docstring as a real f-string bound to a
+variable, then explicitly assigning it via `tool_func.__doc__ = ...` after the function
+is defined — this works regardless of how the string is constructed. Verified via a
+quick harness that `__doc__` is now populated correctly (e.g.
+`develop_adjust_contrast.__doc__ == "Adjust contrast for a photo (-100 to 100)."`).
+
+**Bug 2 — `preview_generate(size="full")` always failed with INVALID_SIZE.** While
+reviewing `preview.py` docstrings prior to slimming them, the user recalled that
+`size="full"` had previously errored. Traced to `PreviewModule.lua`'s
+`generatePreview` and `generateBatchPreviews`: the pixel-size lookup only handled
+`"small"`, `"medium"`, `"large"`, or a raw number — `"full"` fell through to the
+`else` branch and always returned `INVALID_SIZE`. Additionally, the Lua-side pixel
+values (`small=240, medium=640, large=1024`) did not match what the Python docstrings
+promised (`small=640, medium=1080, large=1440`) — since Python's PIL resize step only
+ever downsizes (never upscales), every documented size was silently under-delivering
+(e.g. `"small"` capped at 240px, not the documented 640px).
+
+**Bounding-box assumption (corrected by live test, Oct 14 2026)**: the original
+reasoning was that `LrPhoto:requestJpegThumbnail(width, height, cb)` fits the image
+*within* the box, capping the longest edge. A live test falsified that: the size is a
+**minimum, not a cap**. Lightroom preserves aspect ratio but returns a larger image,
+apparently from its cached previews, and the result is not deterministic across runs
+(a 640 request returned 720x480 in one run, 750x500 in the next; 1080 returned
+1440x960 / 1500x1000). The documented sizes still hold end-to-end only because
+Python's `_resize_and_optimize_jpeg` downsizes named sizes to the exact target.
+
+**Fix applied** in `PreviewModule.lua`:
+1. Raised `small/medium/large` pixel values to `640/1080/1440` to match the Python
+   docstrings (both `generatePreview` and `generateBatchPreviews`).
+2. Added a real `"full"` case to `generatePreview`: looks up the photo's native
+   dimensions via `photo:getRawMetadata("dimensions")` and uses
+   `math.max(width, height)` as the bounding box, so Lightroom returns the image
+   unscaled at true native resolution. Falls back to an 8000px box with a logged
+   warning if dimensions are unavailable. (`generateBatchPreviews` intentionally does
+   **not** support `"full"` — a single shared pixel size is used for the whole batch,
+   and per-photo native-dimension lookups would defeat that.)
+3. Updated `getPreviewInfo`'s `availableSizes` metadata to reflect the corrected
+   values (including `full = "native resolution"`).
+4. Updated stale `docs/API_REFERENCE.md` preview-size table (was still `small: ~240px`,
+   `medium: ~640px`).
+
+**Verification** (live smoke test, Oct 14 2026, against `20250503_coffee_pot_013.arw`,
+6000x4000, on a freshly started Lightroom running this plugin code):
+- `size="full"` → 6000x4000 native (previously always INVALID_SIZE) ✅
+- `size="bogus"` → INVALID_SIZE with the updated message ✅
+- `getPreviewInfo.availableSizes` → 640/1080/1440/"native resolution" ✅
+- End-to-end (Lua output → Python resize): small 640x426, medium 1080x720,
+  large 1440x960 ✅
+- Raw Lua output overshoots small/medium (see bounding-box note above) — fine because
+  Python resizes. Numeric sizes (e.g. `"1000"` → 1500x1000) are not resized by Python;
+  pre-existing behavior, numeric sizes aren't exposed in the MCP tool docs.
+Full Python test suite (92 tests) passes.
+
+**A pre-existing, unrelated Lua-linter false positive was noted but intentionally left
+alone** per user direction: `if previewError then` is flagged by the static linter as
+"always falsy" because it can't model the async closure passed to
+`requestJpegThumbnail` mutating the outer `previewError` upvalue before the
+post-loop check runs. This is a known limitation of that kind of static analysis with
+async Lua closures, not an actual bug — left as-is, out of scope for this fix.
+
+**Files Modified**: `lightroom-python-bridge.lrdevplugin/PreviewModule.lua`,
+`mcp_server/servers/develop/basic_tools.py`, `calibration_tools.py`, `color_tools.py`,
+`detail_tools.py`, `lens_tools.py`, `tone_curves.py`, `docs/API_REFERENCE.md`
+
+**Next steps**: Resume `develop/*.py` docstring/preview.py slimming (see token budget
+section below) — the docstring bug fix already applied doubles as part of that work.
+The `"full"` size fix has been smoke-tested live (see Verification above).
+
+---
+
+## July 2026 - Tool-Definition Token Budget Baseline & Slimming Strategy Exploration 🔄
+
+**Date**: July 10, 2026
+
+**Context**: User's primary current use case is **AI vision-based photo tagging**
+(generate keywords, descriptions, titles from image analysis) — **not** develop/editing.
+Wanted to understand the token cost of loading this MCP server's tool definitions
+into an LLM's context, and explore ways to reduce it.
+
+**Baseline measurement** (via FastMCP's own `get_tools()` registry + `tiktoken`
+cl100k_base encoding — see `tmp_token_estimate.py` at repo root, kept as a reusable
+benchmark script):
+
+| Metric | Value |
+|---|---|
+| Total tools | 147 |
+| Total characters (name+description+inputSchema JSON) | 53,631 |
+| Total tokens (cl100k_base) | **13,825** |
+| Avg chars/token | 3.88 |
+
+**Breakdown by category prefix**:
+
+| Category | Tools | Tokens |
+|---|---|---|
+| `develop_*` | 111 | 7,624 |
+| `catalog_*` | 20 | 2,956 |
+| `preview_*` | 7 | 2,678 |
+| `histogram_*` | 3 | 274 |
+| `system_*` | 4 | 197 |
+| `list_capabilities`/`get_quick_start_guide` | 2 | 96 |
+
+**Heaviest individual tools** (verbose docstrings, mostly `preview.py`'s gateway-warning
+prose): `preview_get_image_data` (726 tok), `preview_get_image_data_as_text` (507 tok),
+`preview_generate` (506 tok), `preview_generate_current` (327 tok),
+`preview_generate_comparison` (324 tok), `catalog_search_photos` (317 tok).
+
+**Key finding**: Since the user does not currently use `develop_*` at all, **55% of the
+token cost (7,624 of 13,825 tokens) is being paid every session for zero benefit** in
+their actual workflow. This is a bigger, lower-risk win than any tool-consolidation or
+docstring-trimming strategy.
+
+**Important unresolved technical point — per-turn token cost, not just session-start**:
+LLM chat APIs are stateless per call; the full tool-definition schema is normally
+re-transmitted as input tokens on *every* turn of a conversation, not just once at
+startup, unless the provider/client has active prompt-caching for the static prefix.
+Whether that applies to the user's setup (Cline + various providers, LM Studio) was
+not yet confirmed — this materially changes the ROI of schema-shrinking work and needs
+verification before further token-optimization work is prioritized.
+
+**Strategies discussed (not yet implemented)**:
+1. **Consolidate `develop_*` single-slider tools** into the existing generic
+   `develop_set_parameter`, keeping only a handful of "hero" tools — biggest lever if
+   develop is heavily used.
+2. **Trim verbose `preview_*` docstrings** (keep a 1-line warning inline, move detailed
+   gateway-interception prose to docs) — moderate savings, low risk.
+3. **Progressive disclosure** (thin `list_tools` + on-demand `get_tool_details`) —
+   evaluated adversarially and **deferred**: real MCP protocol has no native
+   partial-schema mechanism, risk of LLMs guessing wrong parameter values against a
+   live Lightroom catalog, and doesn't clearly win once per-turn resend cost of fetched
+   details is considered.
+4. **Split tool surface by workflow** (catalog/tagging vs. develop/editing) — strongly
+   preferred by user given confirmed workflow split. Two sub-strategies considered:
+   - Single process + env var toggle (`LIGHTROOM_MCP_MODULES`) — safe, but requires
+     server restart to switch modules mid-conversation.
+   - Two separate MCP server configs, toggled live via the LLM harness's native
+     enable/disable — matches user's desired UX (switch mindset mid-conversation)
+     but is **blocked on verifying**: (a) whether the harness's "disable server"
+     actually kills the subprocess (freeing the port) or just hides tools from
+     context while leaving the process alive, and (b) confirming the fixed-port
+     constraint below doesn't cause a silent failure if both are ever live at once.
+
+**Architectural constraint discovered** (relevant to any multi-process design):
+the Lightroom bridge uses a **hardcoded HTTP callback port (54400)** in
+`lightroom_sdk/socket_bridge.py` (`CALLBACK_PORT = 54400`) plus a single shared
+port file (`~/lightroom_ports.txt`) for the command socket. The current design is
+strictly 1:1 (one Python process ↔ one Lightroom connection) — two Python
+processes running simultaneously would collide on the `HTTPServer` bind or the
+port file. This has been documented in `techContext.md` as a hard constraint on
+any future "split into separate MCP servers" work. See "Known Issues" below for
+follow-up items.
+
+**Status**: Investigation paused before implementation to checkpoint findings in
+memory bank. No code changes made yet. **Temporary script `tmp_token_estimate.py`
+intentionally kept** (not cleaned up) at user's request, to serve as the benchmark
+harness for measuring before/after effects of whatever slimming strategy is chosen.
+
+**Next steps** (see `activeContext.md`):
+1. Verify whether Cline's/LM Studio's MCP enable/disable UI stops the subprocess.
+2. Verify whether prompt caching is active for the user's typical model/provider setup.
+3. Decide on and implement the chosen strategy (most likely: module toggle, defaulting
+   to `develop_*` disabled, given confirmed non-use).
+4. Re-run `tmp_token_estimate.py` and record before/after numbers here.
+
+---
+
+## July 2026 - preview_get_image_data_as_text Fallback + Gateway Interception Diagnosis ✅
+
+
+**Date**: July 3, 2026
+
+**Problem**: A user reported `preview_get_image_data` "completely fails" — an LLM
+(`qwen/qwen3.5-9b`) received a JSON stub instead of an image:
+`{"type":"image","fileName":"...","markdown":"![Image](./....jpg)","$hint":"..."}`.
+No `data` field present — not a valid MCP `ImageContent` block.
+
+**Root cause**: Confirmed by reading `fastmcp/tools/tool.py` and
+`fastmcp/utilities/types.py` that our server code correctly emits a proper
+`ImageContent` block via `FastMCPImage(data=jpeg_bytes, format="jpeg")`. The failure
+occurs downstream: a gateway/proxy (Open WebUI or similar) between the MCP server
+and the LLM intercepts `ImageContent` blocks and replaces them with its own
+file-reference stub, which the LLM cannot resolve. No file was written by our server
+in this flow.
+
+**Fix (mitigation, since root cause is external)**:
+- `preview_get_image_data` docstring: added explicit "GATEWAY WARNING" describing the
+  stub shape to recognize, instructing the LLM not to guess/hallucinate when it sees one
+- New tool **`preview_get_image_data_as_text`**: sends the same JPEG as a
+  `data:image/jpeg;base64,...` URI inside a `TextContent` block, since gateways that
+  transform `ImageContent` typically leave `TextContent` alone. Defaults to
+  `size="small"` due to token cost of embedding base64 in text.
+- Updated `main.py` tool count (preview: 4→7), module docstring, and `README.md`
+
+**Files Modified**: `mcp_server/servers/preview.py`, `mcp_server/main.py`, `README.md`
+
+**Verification**: `uv run python -c "from mcp_server.main import main_server..."` loads
+cleanly; full test suite (92 tests) passes with no regressions.
+
+---
+
 ## April 2026 - preview_get_image_data ImageContent Fix ✅
 
 **Date**: April 24, 2026

@@ -16,4 +16,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest-cov>=6.0"]
+dev = [
+    "pytest-cov>=6.0",
+    "tiktoken>=0.13.0",
+]

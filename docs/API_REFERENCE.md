@@ -8,7 +8,7 @@ The Lightroom Python Bridge provides JSON-RPC over TCP sockets for controlling L
 ```json
 {
   "id": "unique-request-id",
-  "command": "catalog.getAllPhotos",  
+  "command": "catalog.getAllPhotos",
   "params": { "limit": 10 }
 }
 ```
@@ -60,7 +60,7 @@ The Lightroom Python Bridge provides JSON-RPC over TCP sockets for controlling L
         "filename": "SacredMonkeyForest-226.ARW",
         "path": "/Volumes/photo/Bali/SacredMonkeyForest/SacredMonkeyForest-226.ARW",
         "fileFormat": "RAW",
-        "folderPath": "SacredMonkeyForest", 
+        "folderPath": "SacredMonkeyForest",
         "captureTime": "4/27/19 11:13:07 PM",
         "isVirtualCopy": false
       }
@@ -187,10 +187,11 @@ The Lightroom Python Bridge provides JSON-RPC over TCP sockets for controlling L
 | `preview.getPreviewChunk` | Get chunked preview data | `previewId`, `chunkIndex` |
 
 ### Preview Sizes
-- `small`: ~240px
-- `medium`: ~640px
-- `large`: ~1440px
+- `small`: ~640px (longest edge)
+- `medium`: ~1080px (longest edge)
+- `large`: ~1440px (longest edge)
 - `full`: Original size
+
 
 **Note:** Large previews (>10MB) automatically use chunked transfer.
 
@@ -254,14 +255,14 @@ request = {
   "params": {"param": "ToneCurvePV2012"}
 }
 
-# Set custom S-curve  
+# Set custom S-curve
 request = {
   "id": "curve2",
   "command": "develop.setCurvePoints",
   "params": {
     "param": "ToneCurvePV2012",
     "points": [
-      {"x": 0, "y": 0}, {"x": 64, "y": 48}, 
+      {"x": 0, "y": 0}, {"x": 64, "y": 48},
       {"x": 128, "y": 128}, {"x": 192, "y": 208}, {"x": 255, "y": 255}
     ]
   }
@@ -269,7 +270,7 @@ request = {
 
 # Apply S-curve preset
 request = {
-  "id": "curve3", 
+  "id": "curve3",
   "command": "develop.setCurveSCurve",
   "params": {"param": "ToneCurvePV2012", "strength": 30}
 }
@@ -290,7 +291,7 @@ request = {
 
 # Create cyan color correction
 request = {
-  "id": "pc2", 
+  "id": "pc2",
   "command": "develop.createCyanSwatch",
   "params": {
     "saturationBoost": 0.3,
@@ -301,7 +302,7 @@ request = {
 # Apply color grading presets
 request = {
   "id": "pc3",
-  "command": "develop.enhanceColors", 
+  "command": "develop.enhanceColors",
   "params": {
     "preset": "vibrant",
     "preserveExisting": false
@@ -311,7 +312,7 @@ request = {
 
 **PointColors Parameters:**
 - `saturationBoost`: -1.0 to 1.0 (saturation adjustment)
-- `luminanceAdjust`: -1.0 to 1.0 (brightness adjustment)  
+- `luminanceAdjust`: -1.0 to 1.0 (brightness adjustment)
 - `hueShift`: -1.0 to 1.0 (hue shift)
 - `rangeWidth`: "tight", "normal", "wide" (selection precision)
 - `preset`: "natural", "vibrant", "muted", "autumn"
@@ -406,7 +407,7 @@ Complete masking system with AI-powered selections, range masks, and local param
 
 **Supported Mask Types:**
 - **AI Selections**: Subject, sky, background, objects, people, landscape
-- **Range Masks**: Luminance, color, depth-based selections  
+- **Range Masks**: Luminance, color, depth-based selections
 - **Manual Tools**: Graduated filter, radial filter, adjustment brush
 - **Local Parameters**: 23 parameters (temperature, exposure, clarity, etc.)
 

@@ -10,6 +10,10 @@ This module provides two distinct categories of preview tools:
   preview_get_image_data  — Returns an MCP ImageContent block; vision-capable
                             clients (Claude Desktop, Continue, etc.) render the
                             image directly.  The response is NOT a file path.
+  preview_get_image_data_as_text — Fallback for gateways/proxies that intercept
+                            ImageContent blocks (e.g. Open WebUI). Returns the
+                            same image as a base64 data URI inside a
+                            TextContent block instead.
 
 **TEXT/FILE tools (return file paths or metadata)**
   preview_generate            — Saves JPEG to disk, returns the file path as text
@@ -47,6 +51,7 @@ import tempfile
 import time
 from PIL import Image
 from fastmcp.utilities.types import Image as FastMCPImage
+from mcp.types import TextContent
 import io
 import numpy as np
 
@@ -442,36 +447,20 @@ class PreviewServer(LightroomServerModule):
             save_path: Optional[str] = None,
         ) -> Dict[str, Any]:
             """
-            Generate a JPEG preview of a photo and save it to disk.
+            Save a JPEG preview to disk and return its file path (TEXT/FILE
+            output — no image data in the response). To visually inspect the
+            photo yourself, use preview_get_image_data instead.
 
-            ⚠️  TEXT/FILE OUTPUT — This tool saves a JPEG to disk and returns the
-            file path as a string.  The image data itself is NOT included in the
-            response and will NOT be rendered by your LLM client.
-
-            USE THIS TOOL when the goal is to produce a preview file for a human
-            user to view externally (e.g., saving to a known location on disk).
-
-            If you need to visually inspect the photo yourself (e.g., to evaluate
-            edits), use preview_get_image_data instead — it returns an MCP
-            ImageContent block that vision-capable clients render directly.
-
-            By default, previews are saved to the system temporary directory and
-            will be cleaned up automatically by the OS. Provide save_path to
-            override the destination.
+            By default, saves to the system temp directory (auto-cleaned).
 
             Args:
                 photo_id: Photo ID (uses current selection if not provided)
-                size: Preview size (maintains aspect ratio):
-                      - "small": 640px longest edge, quality 50
-                      - "medium": 1080px longest edge, quality 90
-                      - "large": 1440px longest edge, quality 90
-                      - "full": original resolution, quality 90
+                size: "small" (640px longest edge), "medium" (1080px),
+                      "large" (1440px), or "full" (original resolution)
                 quality: Optional JPEG quality override (1-100)
                 filename: Optional filename hint for the saved file
-                save_path: Optional save location. Can be:
-                          - None: saves to system temp directory (recommended)
-                          - Directory path: saves to that directory with auto-generated name
-                          - Full file path: saves to exact path (e.g., "/tmp/my_preview.jpg")
+                save_path: None=temp dir (default), a directory, or a full
+                           .jpg file path
 
             Returns:
                 Dictionary with file_path and metadata
@@ -548,41 +537,26 @@ class PreviewServer(LightroomServerModule):
             quality: Optional[int] = None,
         ) -> Union[FastMCPImage, Dict[str, Any]]:
             """
-            Generate a JPEG preview and return the image data directly in the response.
+            Generate a JPEG preview and return it inline as an MCP
+            ImageContent block. RECOMMENDED tool for visually inspecting a
+            photo — no filesystem access needed.
 
-            USE THIS TOOL when you need to visually inspect a photo. The image is
-            returned as base64-encoded data directly in the response, so no filesystem
-            access is needed. This is the RECOMMENDED tool for viewing photos.
-
-            If you are unsure whether you have filesystem access, use this tool.
-
-            To keep the response size manageable for smaller context windows:
-            - Use size="small" (640px, ~30–80 KB base64) for quick checks
-            - Use size="medium" (1080px, ~200–500 KB base64) for normal editing review
-            - Lower quality (e.g., quality=50) also reduces response size significantly
-
-            Use preview_generate instead only when the goal is to produce a file on
-            disk for a human user — that tool does NOT return image data in its response.
+            GATEWAY WARNING: some gateways/proxies (e.g. Open WebUI)
+            intercept ImageContent blocks and replace them with a JSON stub
+            containing "fileName"/"markdown"/"$hint" instead of a "data"
+            field. If you see that, you did NOT receive the image — try
+            preview_get_image_data_as_text as a fallback, or use
+            preview_generate (saves to disk) instead.
 
             Args:
                 photo_id: Photo ID (uses current selection if not provided)
-                size: Preview size (maintains aspect ratio):
-                      - "small": 640px longest edge, quality 50
-                      - "medium": 1080px longest edge, quality 90  (default)
-                      - "large": 1440px longest edge, quality 90
-                      - "full": original resolution, quality 90
-                quality: Optional JPEG quality override (1-100). Lower values
-                         reduce response size at the cost of image fidelity.
+                size: "small" (640px longest edge, ~30-80KB), "medium"
+                      (1080px, ~200-500KB, default), "large" (1440px), or
+                      "full" (original resolution)
+                quality: Optional JPEG quality override (1-100)
 
             Returns:
-                🖼️  MULTIMODAL — Always returns an MCP ImageContent block:
-                    {"type": "image", "data": "/9j/4AAQ...", "mimeType": "image/jpeg"}
-                Vision-capable clients (Claude Desktop, Continue, Cursor) render
-                the image inline.  On error, returns a JSON error dict instead.
-
-                NOTE — Clients that do not support MCP ImageContent blocks will
-                not render the image inline.  Use preview_generate to save to
-                disk instead.
+                MCP ImageContent block, or a JSON error dict on failure.
             """
             if not photo_id:
                 try:
@@ -633,32 +607,92 @@ class PreviewServer(LightroomServerModule):
                 }
 
         @self.server.tool
+        async def preview_get_image_data_as_text(
+            photo_id: Optional[str] = None,
+            size: str = "small",
+            quality: Optional[int] = None,
+        ) -> Union[TextContent, Dict[str, Any]]:
+            """
+            Fallback for preview_get_image_data: returns the JPEG as a
+            "data:image/jpeg;base64,..." URI in a TextContent block instead
+            of an ImageContent block. Produces a much larger response, so
+            prefer size="small" and low quality.
+
+            Args:
+                photo_id: Photo ID (uses current selection if not provided)
+                size: "small" (640px longest edge, default), "medium"
+                      (1080px), "large" (1440px), or "full"
+                quality: Optional JPEG quality override (1-100)
+
+            Returns:
+                MCP TextContent block with a base64 data URI, or a JSON
+                error dict on failure.
+            """
+            if not photo_id:
+                try:
+                    selected = await self.execute_command(
+                        "catalog.getSelectedPhotos", {}
+                    )
+                    if selected.get("count", 0) == 0:
+                        return {
+                            "success": False,
+                            "error": "No photo selected in Lightroom",
+                            "hint": "Please select a photo or provide photo_id parameter",
+                        }
+                    photo_id = str(selected["photos"][0]["id"])
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "error": f"Failed to get selected photo: {e}",
+                    }
+
+            if quality is None:
+                quality_defaults = {"small": 50, "medium": 90, "large": 90, "full": 90}
+                quality = quality_defaults.get(size, 90)
+
+            try:
+                full_data, info = await self._fetch_preview_data(
+                    photo_id, size, quality
+                )
+                jpeg_bytes, actual_width, actual_height = self._process_preview_data(
+                    full_data, size, quality
+                )
+
+                b64_data = base64.b64encode(jpeg_bytes).decode("ascii")
+                data_uri = f"data:image/jpeg;base64,{b64_data}"
+
+                logger.info(
+                    f"Returning image data as text/data-URI: photo={info.get('photoId', photo_id)}, "
+                    f"{actual_width}x{actual_height}, {len(jpeg_bytes)} bytes, "
+                    f"{len(data_uri)} chars, quality={quality}"
+                )
+
+                # Send through the TEXT content channel rather than ImageContent
+                # so gateways that only intercept/transform ImageContent blocks
+                # pass this through unmodified.
+                return TextContent(type="text", text=data_uri)
+
+            except Exception as e:
+                logger.error(f"Preview image data (text) generation failed: {e}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "hint": "Ensure a photo is selected in Lightroom",
+                }
+
+        @self.server.tool
         async def preview_generate_current(
             filename: Optional[str] = None, save_path: Optional[str] = None
         ) -> Dict[str, Any]:
             """
-            Generate a preview of the currently selected photo and save to disk.
-
-            ⚠️  TEXT/FILE OUTPUT — This tool saves a JPEG to disk and returns the
-            file path as a string.  The image data itself is NOT included in the
-            response and will NOT be rendered by your LLM client.
-
-            Simplified version for quick iteration during editing.
-            Always uses medium size (1080px longest edge) and quality 90 for efficient files.
-
-            The preview is saved to a file and only the file path is returned.
-            If you need the image data returned directly (no filesystem access required),
-            use preview_get_image_data instead.
-
-            By default, previews are saved to the system temporary directory and
-            will be cleaned up automatically by the OS.
+            Save a preview of the currently selected photo to disk (file path
+            only, no image data). Always medium size (1080px), quality 90.
+            For inline image data instead, use preview_get_image_data.
 
             Args:
                 filename: Optional filename hint for the saved file
-                save_path: Optional save location. Can be:
-                          - None: saves to system temp directory (recommended)
-                          - Directory path: saves to that directory with auto-generated name
-                          - Full file path: saves to exact path (e.g., "/tmp/current_preview.jpg")
+                save_path: None=temp dir (default), a directory, or a full
+                           .jpg file path
 
             Returns:
                 Dictionary with file_path and metadata
@@ -783,13 +817,8 @@ class PreviewServer(LightroomServerModule):
             save_path: Optional[str] = None,
         ) -> Dict[str, Any]:
             """
-            Generate before/after comparison previews and save them to disk.
-
-            ⚠️  TEXT/FILE OUTPUT — This tool saves before/after JPEGs to disk and
-            returns file paths as strings.  The image data itself is NOT included
-            in the response and will NOT be rendered by your LLM client.
-
-            Useful for AI agents to evaluate the impact of adjustments.
+            Save before/after comparison previews to disk (file paths only,
+            no image data). Useful for evaluating the impact of adjustments.
 
             Args:
                 before_settings: Develop settings for "before" (None = current)
@@ -904,14 +933,8 @@ class PreviewServer(LightroomServerModule):
             photo_ids: List[str], size: str = "small", quality: int = 85
         ) -> Dict[str, Any]:
             """
-            Generate previews for multiple photos.
-
-            ⚠️  TEXT/FILE OUTPUT — This tool saves multiple JPEGs to disk and
-            returns file paths and metadata as text.  The image data itself is
-            NOT included in the response and will NOT be rendered by your LLM
-            client.
-
-            Efficient batch generation for browsing/selection.
+            Save previews for multiple photos to disk (file paths only, no
+            image data). Efficient batch generation for browsing/selection.
 
             Args:
                 photo_ids: List of photo IDs

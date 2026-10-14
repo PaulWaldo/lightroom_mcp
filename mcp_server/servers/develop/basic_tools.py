@@ -218,7 +218,7 @@ def setup_basic_tools(server, execute_command):
         # Separate Temperature and Tint from other settings (they must be set individually)
         individual_params = {}
         bulk_settings = {}
-        
+
         for param, value in settings.items():
             if param in ["Temperature", "Tint"]:
                 individual_params[param] = value
@@ -227,7 +227,7 @@ def setup_basic_tools(server, execute_command):
 
         try:
             applied_count = 0
-            
+
             # Apply bulk settings first (if any)
             if bulk_settings:
                 params = {
@@ -236,7 +236,7 @@ def setup_basic_tools(server, execute_command):
                 }
                 result = await execute_command("applySettings", params)
                 applied_count += len(bulk_settings)
-            
+
             # Apply Temperature and Tint individually
             for param, value in individual_params.items():
                 params = {
@@ -444,16 +444,8 @@ def _create_basic_adjustment_tool(server, execute_command, suffix: str, param_na
             value: float,
             photo_id: Optional[str] = None
         ) -> Dict[str, Any]:
-            f"""
-            Adjust {param_fixed.lower()} for a photo.
-
-            Args:
-                value: {param_fixed} adjustment ({min_fixed} to {max_fixed})
-                photo_id: Photo ID (uses current selection if not provided)
-
-            Returns:
-                Updated {param_fixed.lower()} value and photo ID
-            """
+            # Docstring is assigned via __doc__ below; an f-string here
+            # would not be captured as __doc__.
             if not min_fixed <= value <= max_fixed:
                 raise ValueError(f"{param_fixed} must be between {min_fixed} and {max_fixed}, got {value}")
 
@@ -469,7 +461,11 @@ def _create_basic_adjustment_tool(server, execute_command, suffix: str, param_na
                 "value": value,
                 "photo_id": result.get("photoId")
             }
+        adjustment_tool.__doc__ = (
+            f"Adjust {param_fixed.lower()} for a photo ({min_fixed} to {max_fixed})."
+        )
         return adjustment_tool
+
 
     tool_func = make_adjustment_tool(param_name, min_val, max_val)
     tool_func.__name__ = f"develop_adjust_{suffix}"

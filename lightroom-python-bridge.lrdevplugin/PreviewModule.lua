@@ -97,21 +97,33 @@ function PreviewModule.generatePreview(params, callback)
 
         progressScope:setPortionComplete(0.1)
 
-            -- Determine pixel size
+            -- Determine the size requested from requestJpegThumbnail. Lightroom
+            -- treats this as a minimum, not a cap: it preserves aspect ratio but
+            -- may return a larger image (e.g. 720px or 750px for a 640px request,
+            -- apparently drawn from its cached previews). The Python server
+            -- downsizes to the exact target for named sizes.
             local pixelSize
             if size == "small" then
-                pixelSize = 240
-            elseif size == "medium" then
                 pixelSize = 640
+            elseif size == "medium" then
+                pixelSize = 1080
             elseif size == "large" then
-                pixelSize = 1024
+                pixelSize = 1440
+            elseif size == "full" then
+                local dims = photo:getRawMetadata("dimensions")
+                if dims and dims.width and dims.height then
+                    pixelSize = math.max(dims.width, dims.height)
+                else
+                    logger:warn("Could not read original dimensions for photo " .. photoId .. "; using fallback bounding box for 'full' size")
+                    pixelSize = 8000
+                end
             elseif tonumber(size) then
                 pixelSize = tonumber(size)
             else
                 callback({
                     error = {
                         code = "INVALID_SIZE",
-                        message = "Size must be 'small', 'medium', 'large', or a number"
+                        message = "Size must be 'small', 'medium', 'large', 'full', or a number"
                     }
                 })
                 return
@@ -276,14 +288,19 @@ function PreviewModule.generateBatchPreviews(params, callback)
         catalog:withReadAccessDo(function()
             local results = {}
 
-            -- Determine pixel size
+            -- Determine the size requested from requestJpegThumbnail (a
+            -- minimum, not a cap; see generatePreview above). Note:
+            -- "full" (native resolution) is intentionally not supported for
+            -- batch generation since per-photo dimensions would need to be
+            -- looked up individually, defeating the purpose of a shared
+            -- pixelSize for the whole batch.
         local pixelSize
         if size == "small" then
-            pixelSize = 240
-        elseif size == "medium" then
             pixelSize = 640
+        elseif size == "medium" then
+            pixelSize = 1080
         elseif size == "large" then
-            pixelSize = 1024
+            pixelSize = 1440
         elseif tonumber(size) then
             pixelSize = tonumber(size)
         else
@@ -436,9 +453,10 @@ function PreviewModule.getPreviewInfo(params, callback)
                 originalWidth = metadata and metadata.width or nil,
                 originalHeight = metadata and metadata.height or nil,
                 availableSizes = {
-                    small = 240,
-                    medium = 640,
-                    large = 1024
+                    small = 640,
+                    medium = 1080,
+                    large = 1440,
+                    full = "native resolution"
                 }
             }
 

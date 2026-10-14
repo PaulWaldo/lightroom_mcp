@@ -1,5 +1,95 @@
 # Progress
 
+## July 2026 - Fixed docstring bug + preview "full" size bug (discovered mid-slimming) ✅
+
+**Date**: July 12, 2026
+
+**Context**: While slimming `develop/*.py` factory-generated tool docstrings (see token
+budget work below), discovered and fixed two unrelated but real bugs:
+
+**Bug 1 — f-string docstrings never worked.** All 6 factory functions across
+`develop/basic_tools.py`, `calibration_tools.py`, `color_tools.py`, `detail_tools.py`,
+`lens_tools.py`, and `tone_curves.py` used an f-string as the first statement inside
+the dynamically-created tool function, e.g.:
+```python
+async def hsl_tool(value: float) -> Dict[str, Any]:
+    f"""Adjust {adjustment} for {color} colors..."""
+    ...
+```
+An f-string is **not** a plain string literal, so Python does not capture it as
+`__doc__` — it silently evaluates and discards the string. This meant every one of the
+~90 factory-generated `develop_adjust_*` tools (HSL, calibration, detail, lens,
+parametric tone curve, and basic adjustment tools) had **no description at all** in
+their MCP tool schema. Fixed by building the docstring as a real f-string bound to a
+variable, then explicitly assigning it via `tool_func.__doc__ = ...` after the function
+is defined — this works regardless of how the string is constructed. Verified via a
+quick harness that `__doc__` is now populated correctly (e.g.
+`develop_adjust_contrast.__doc__ == "Adjust contrast for a photo (-100 to 100)."`).
+
+**Bug 2 — `preview_generate(size="full")` always failed with INVALID_SIZE.** While
+reviewing `preview.py` docstrings prior to slimming them, the user recalled that
+`size="full"` had previously errored. Traced to `PreviewModule.lua`'s
+`generatePreview` and `generateBatchPreviews`: the pixel-size lookup only handled
+`"small"`, `"medium"`, `"large"`, or a raw number — `"full"` fell through to the
+`else` branch and always returned `INVALID_SIZE`. Additionally, the Lua-side pixel
+values (`small=240, medium=640, large=1024`) did not match what the Python docstrings
+promised (`small=640, medium=1080, large=1440`) — since Python's PIL resize step only
+ever downsizes (never upscales), every documented size was silently under-delivering
+(e.g. `"small"` capped at 240px, not the documented 640px).
+
+**Bounding-box assumption (corrected by live test, Oct 14 2026)**: the original
+reasoning was that `LrPhoto:requestJpegThumbnail(width, height, cb)` fits the image
+*within* the box, capping the longest edge. A live test falsified that: the size is a
+**minimum, not a cap**. Lightroom preserves aspect ratio but returns a larger image,
+apparently from its cached previews, and the result is not deterministic across runs
+(a 640 request returned 720x480 in one run, 750x500 in the next; 1080 returned
+1440x960 / 1500x1000). The documented sizes still hold end-to-end only because
+Python's `_resize_and_optimize_jpeg` downsizes named sizes to the exact target.
+
+**Fix applied** in `PreviewModule.lua`:
+1. Raised `small/medium/large` pixel values to `640/1080/1440` to match the Python
+   docstrings (both `generatePreview` and `generateBatchPreviews`).
+2. Added a real `"full"` case to `generatePreview`: looks up the photo's native
+   dimensions via `photo:getRawMetadata("dimensions")` and uses
+   `math.max(width, height)` as the bounding box, so Lightroom returns the image
+   unscaled at true native resolution. Falls back to an 8000px box with a logged
+   warning if dimensions are unavailable. (`generateBatchPreviews` intentionally does
+   **not** support `"full"` — a single shared pixel size is used for the whole batch,
+   and per-photo native-dimension lookups would defeat that.)
+3. Updated `getPreviewInfo`'s `availableSizes` metadata to reflect the corrected
+   values (including `full = "native resolution"`).
+4. Updated stale `docs/API_REFERENCE.md` preview-size table (was still `small: ~240px`,
+   `medium: ~640px`).
+
+**Verification** (live smoke test, Oct 14 2026, against `20250503_coffee_pot_013.arw`,
+6000x4000, on a freshly started Lightroom running this plugin code):
+- `size="full"` → 6000x4000 native (previously always INVALID_SIZE) ✅
+- `size="bogus"` → INVALID_SIZE with the updated message ✅
+- `getPreviewInfo.availableSizes` → 640/1080/1440/"native resolution" ✅
+- End-to-end (Lua output → Python resize): small 640x426, medium 1080x720,
+  large 1440x960 ✅
+- Raw Lua output overshoots small/medium (see bounding-box note above) — fine because
+  Python resizes. Numeric sizes (e.g. `"1000"` → 1500x1000) are not resized by Python;
+  pre-existing behavior, numeric sizes aren't exposed in the MCP tool docs.
+Full Python test suite (92 tests) passes.
+
+**A pre-existing, unrelated Lua-linter false positive was noted but intentionally left
+alone** per user direction: `if previewError then` is flagged by the static linter as
+"always falsy" because it can't model the async closure passed to
+`requestJpegThumbnail` mutating the outer `previewError` upvalue before the
+post-loop check runs. This is a known limitation of that kind of static analysis with
+async Lua closures, not an actual bug — left as-is, out of scope for this fix.
+
+**Files Modified**: `lightroom-python-bridge.lrdevplugin/PreviewModule.lua`,
+`mcp_server/servers/develop/basic_tools.py`, `calibration_tools.py`, `color_tools.py`,
+`detail_tools.py`, `lens_tools.py`, `tone_curves.py`, `docs/API_REFERENCE.md`
+
+**Next steps**: Resume `develop/*.py` docstring/preview.py slimming (see token budget
+section below) — the docstring bug fix already applied doubles as part of that work.
+The `"full"` size fix has been smoke-tested live (see Verification above).
+
+---
+
 ## July 2026 - Tool-Definition Token Budget Baseline & Slimming Strategy Exploration 🔄
 
 **Date**: July 10, 2026
